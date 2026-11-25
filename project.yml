@@ -1,0 +1,23 @@
+name: fiji333
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  fiji333:
+    type: application
+    platform: iOS
+    sources:
+      - App
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: fiji333
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.fiji333
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.0"
