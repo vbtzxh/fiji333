@@ -1,0 +1,39 @@
+name: Build IPA
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26-large
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: cd fiji333 && xcodegen generate
+
+      - name: Build app
+        run: |
+          cd fiji333
+          xcodebuild -project fiji333.xcodeproj -scheme fiji333 \
+            -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Package IPA
+        run: |
+          mkdir -p out/Payload
+          cp -R fiji333/build/Build/Products/Release-iphoneos/fiji333.app out/Payload/
+          cd out && zip -qry fiji333.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: fiji333-ipa
+          path: out/fiji333.ipa
+          if-no-files-found: error
