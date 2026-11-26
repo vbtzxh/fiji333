@@ -1,3 +1,4 @@
+
 name: Build IPA
 
 on:
@@ -6,7 +7,8 @@ on:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: macos-26-intel
+
     steps:
       - uses: actions/checkout@v4
 
