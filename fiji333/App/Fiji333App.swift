@@ -1,6 +1,6 @@
 import SwiftUI
 
-// TrollOS: a pretend operating system. Nothing here touches the real device.
+// TrollOS runs entirely inside this app.
 
 @main
 struct Fiji333App: App {
@@ -79,6 +79,12 @@ final class OSState: ObservableObject {
     @Published var popupTitle = ""
     @Published var popupText = ""
     @Published var showPopup = false
+    @Published var banner: Banner?
+    @Published var showControls = false
+    @Published var brightness = 1.0
+    @AppStorage("airplane") var airplane = false
+    @AppStorage("wifi") var wifi = true
+    @AppStorage("bluetooth") var bluetooth = true
     @AppStorage("wallpaper") var wallpaper = 0
     @AppStorage("username") var username = "troll"
 
@@ -92,6 +98,15 @@ final class OSState: ObservableObject {
                               startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
+    func notify(_ title: String, _ text: String) {
+        let item = Banner(title: title, text: text)
+        withAnimation(.spring()) { banner = item }
+        Task {
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            if banner?.id == item.id { withAnimation { banner = nil } }
+        }
+    }
+
     func popup(_ title: String, _ text: String) {
         popupTitle = title
         popupText = text
@@ -100,11 +115,15 @@ final class OSState: ObservableObject {
 
     func reboot() {
         openApp = nil
+        showControls = false
+        banner = nil
         phase = .boot
     }
 
     func shutdown() {
         openApp = nil
+        showControls = false
+        banner = nil
         phase = .off
     }
 
@@ -115,6 +134,12 @@ final class OSState: ObservableObject {
         username = "troll"
         reboot()
     }
+}
+
+struct Banner: Identifiable {
+    let id = UUID()
+    let title: String
+    let text: String
 }
 
 struct RootView: View {
@@ -128,6 +153,17 @@ struct RootView: View {
             case .lock: LockView()
             case .home: DesktopView()
             }
+            Color.black
+                .opacity((1 - os.brightness) * 0.7)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            if let banner = os.banner {
+                VStack {
+                    BannerView(banner: banner)
+                    Spacer()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
         .preferredColorScheme(.dark)
         .alert(os.popupTitle, isPresented: $os.showPopup) {
@@ -135,6 +171,30 @@ struct RootView: View {
         } message: {
             Text(os.popupText)
         }
+    }
+}
+
+struct BannerView: View {
+    @EnvironmentObject var os: OSState
+    let banner: Banner
+    var body: some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 9)
+                .fill(Color.green)
+                .frame(width: 38, height: 38)
+                .overlay(Text("T").bold())
+            VStack(alignment: .leading) {
+                Text(banner.title).bold()
+                Text(banner.text).font(.subheadline)
+            }
+            Spacer()
+            Text("now").font(.caption).foregroundColor(.secondary)
+        }
+        .padding(12)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(.horizontal, 10)
+        .onTapGesture { withAnimation { os.banner = nil } }
     }
 }
 
@@ -152,27 +212,21 @@ struct OffView: View {
 struct BootView: View {
     @EnvironmentObject var os: OSState
     @State private var progress = 0.0
-    @State private var line = "Starting emulator..."
-
+    
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             VStack(spacing: 24) {
                 Text("TrollOS")
                     .font(.system(size: 46, weight: .black, design: .rounded))
-                ProgressView(value: progress).frame(width: 220).tint(.white)
-                Text(line).font(.system(.footnote, design: .monospaced)).foregroundColor(.green)
-                Text("Fake emulator, just for fun").font(.caption).foregroundColor(.gray)
+                ProgressView(value: progress).frame(width: 180).tint(.white)
             }
         }
         .task {
-            let steps = ["Loading fake kernel", "Mounting banana drive",
-                         "Starting TrollBoard", "Feeding the hamsters", "Welcome"]
-            for (i, step) in steps.enumerated() {
-                line = step
-                withAnimation { progress = Double(i + 1) / Double(steps.count) }
-                try? await Task.sleep(nanoseconds: 700_000_000)
+            for i in 1...40 {
+                try? await Task.sleep(nanoseconds: 80_000_000)
                 if Task.isCancelled { return }
+                progress = Double(i) / 40
             }
             os.phase = .lock
         }
@@ -194,18 +248,18 @@ struct LockView: View {
                 }
                 .padding(.top, 60)
                 Spacer()
-                Text("Hello, \(os.username)").font(.title2)
-                Button { os.phase = .home } label: {
-                    Text("Unlock")
-                        .bold()
-                        .frame(width: 200, height: 50)
-                        .background(.ultraThinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-                .padding(.bottom, 40)
+                Text("Swipe up to unlock").font(.headline)
+                Capsule().frame(width: 140, height: 5).padding(.bottom, 10)
             }
             .foregroundColor(.white)
         }
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 30).onEnded { drag in
+            if drag.translation.height < -60 {
+                withAnimation { os.phase = .home }
+                os.notify("Software Update", "TrollOS 3.4 is available in Settings.")
+            }
+        })
     }
 }
 
@@ -229,12 +283,32 @@ struct DesktopView: View {
     private let columns = Array(repeating: GridItem(.flexible()), count: 4)
     private let dock: [AppID] = [.terminal, .files, .browser, .settings]
 
+    @State private var search = ""
+
+    private var visible: [AppID] {
+        if search.isEmpty { return AppID.allCases.filter { !dock.contains($0) } }
+        return AppID.allCases.filter { $0.rawValue.localizedCaseInsensitiveContains(search) }
+    }
+
     var body: some View {
         ZStack {
             os.gradient.ignoresSafeArea()
             VStack {
+                HStack {
+                    TextField("Search", text: $search)
+                        .autocorrectionDisabled()
+                        .padding(10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                    Button("Controls") { withAnimation { os.showControls = true } }
+                        .font(.subheadline.bold())
+                        .padding(10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                }
+                .padding(.horizontal)
                 LazyVGrid(columns: columns, spacing: 22) {
-                    ForEach(AppID.allCases.filter { !dock.contains($0) }) { app in
+                    ForEach(visible) { app in
                         icon(app, label: true)
                     }
                 }
@@ -255,13 +329,18 @@ struct DesktopView: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
             }
+            .foregroundColor(.white)
             if let app = os.openApp {
                 AppWindow(app: app)
                     .transition(.scale.combined(with: .opacity))
                     .zIndex(1)
             }
+            if os.showControls {
+                ControlCentre()
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(2)
+            }
         }
-        .foregroundColor(.white)
     }
 
     private func icon(_ app: AppID, label: Bool) -> some View {
@@ -276,24 +355,82 @@ struct DesktopView: View {
     }
 }
 
+struct ControlCentre: View {
+    @EnvironmentObject var os: OSState
+    @State private var torch = false
+    @State private var volume = 0.5
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+                .onTapGesture { withAnimation { os.showControls = false } }
+            VStack(spacing: 16) {
+                HStack(spacing: 14) {
+                    tile("Airplane", on: os.airplane, color: .orange) { os.airplane.toggle() }
+                    tile("Wi-Fi", on: os.wifi && !os.airplane, color: .blue) { os.wifi.toggle() }
+                }
+                HStack(spacing: 14) {
+                    tile("Bluetooth", on: os.bluetooth && !os.airplane, color: .blue) { os.bluetooth.toggle() }
+                    tile("Torch", on: torch, color: .yellow) { torch.toggle() }
+                }
+                VStack(alignment: .leading) {
+                    Text("Brightness")
+                    Slider(value: $os.brightness, in: 0.2...1)
+                    Text("Volume")
+                    Slider(value: $volume)
+                }
+                .padding()
+                .background(Color.black.opacity(0.35))
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                Button("Done") { withAnimation { os.showControls = false } }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(30)
+        }
+    }
+
+    private func tile(_ title: String, on: Bool, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack {
+                Text(title).bold()
+                Text(on ? "On" : "Off").font(.caption)
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity, minHeight: 80)
+            .background(on ? color : Color.black.opacity(0.35))
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+        }
+    }
+}
+
 struct AppWindow: View {
     @EnvironmentObject var os: OSState
     let app: AppID
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Button("Home") { withAnimation { os.openApp = nil } }
-                Spacer()
-                Text(app.rawValue).bold()
-                Spacer()
-                Text("Home").hidden()
+        NavigationStack {
+            VStack(spacing: 0) {
+                content.frame(maxWidth: .infinity, maxHeight: .infinity)
+                Capsule()
+                    .fill(Color.white)
+                    .frame(width: 140, height: 5)
+                    .frame(maxWidth: .infinity, minHeight: 30)
+                    .contentShape(Rectangle())
+                    .onTapGesture { close() }
+                    .gesture(DragGesture(minimumDistance: 10).onEnded { drag in
+                        if drag.translation.height < 0 { close() }
+                    })
             }
-            .padding()
-            .background(Color(white: 0.1))
-            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle(app.rawValue)
+            .navigationBarTitleDisplayMode(app == .settings ? .large : .inline)
         }
         .background(Color.black.ignoresSafeArea())
+    }
+
+    private func close() {
+        withAnimation(.spring()) { os.openApp = nil }
     }
 
     @ViewBuilder private var content: some View {
@@ -338,47 +475,236 @@ struct Row: View {
 
 struct SettingsApp: View {
     @EnvironmentObject var os: OSState
-    @State private var wifi = true
-    @State private var blue = false
-    @State private var turbo = false
+    @State private var search = ""
+
+    var body: some View {
+        List {
+            Section {
+                NavigationLink { ProfilePage() } label: {
+                    HStack(spacing: 14) {
+                        Circle()
+                            .fill(Color.gray)
+                            .frame(width: 56, height: 56)
+                            .overlay(Text(String(os.username.prefix(1)).uppercased()).font(.title2.bold()))
+                        VStack(alignment: .leading) {
+                            Text(os.username).font(.title3)
+                            Text("Local profile").font(.caption).foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+            Section {
+                Toggle(isOn: $os.airplane) { Row(tile: "AIR", color: .orange, title: "Airplane Mode") }
+                NavigationLink { WiFiPage() } label: {
+                    Row(tile: "WF", color: .blue, title: "Wi-Fi",
+                        value: os.wifi && !os.airplane ? "TrollNet" : "Off")
+                }
+                Toggle(isOn: $os.bluetooth) { Row(tile: "BT", color: .blue, title: "Bluetooth") }
+            }
+            Section {
+                link("NO", .red, "Notifications") {
+                    SwitchPage(title: "Notifications", names: ["Allow Notifications", "Sounds", "Badges", "Show Previews"])
+                }
+                link("SN", .pink, "Sounds & Haptics") {
+                    SwitchPage(title: "Sounds & Haptics", names: ["Keyboard Clicks", "Lock Sound", "System Haptics"])
+                }
+                link("FO", .indigo, "Focus") {
+                    SwitchPage(title: "Focus", names: ["Do Not Disturb", "Sleep", "Work"])
+                }
+            }
+            Section {
+                link("GN", .gray, "General") { GeneralPage() }
+                link("DS", .blue, "Display & Brightness") { DisplayPage() }
+                link("WP", .teal, "Wallpaper") { WallpaperPage() }
+                link("BAT", .green, "Battery") { BatteryPage() }
+                link("PR", .blue, "Privacy & Security") {
+                    SwitchPage(title: "Privacy & Security", names: ["Location Services", "Tracking Requests", "Analytics"])
+                }
+            }
+        }
+        .searchable(text: $search)
+        .onSubmit(of: .search) {
+            os.popup("Search", "No results for \"\(search)\".")
+        }
+    }
+
+    private func link<V: View>(_ tile: String, _ color: Color, _ title: String,
+                               @ViewBuilder page: @escaping () -> V) -> some View {
+        NavigationLink { page() } label: { Row(tile: tile, color: color, title: title) }
+    }
+}
+
+struct ProfilePage: View {
+    @EnvironmentObject var os: OSState
+    var body: some View {
+        List {
+            Section("Name") { TextField("Name", text: $os.username) }
+        }
+        .navigationTitle("Profile")
+    }
+}
+
+struct WiFiPage: View {
+    @EnvironmentObject var os: OSState
+    @State private var chosen = ""
+    @State private var asking = false
+    private let networks = ["TrollNet", "Coconut-5G", "FBI Van", "Free Bananas"]
+
+    var body: some View {
+        List {
+            Toggle("Wi-Fi", isOn: $os.wifi)
+            if os.wifi && !os.airplane {
+                Section("Networks") {
+                    ForEach(networks, id: \.self) { name in
+                        Button(name) { chosen = name; asking = true }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Wi-Fi")
+        .alert("Join \(chosen)?", isPresented: $asking) {
+            Button("Join") { os.notify("Wi-Fi", "Unable to join \(chosen). Signal too trolled.") }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+}
+
+struct SwitchPage: View {
+    let title: String
+    let names: [String]
+    @State private var off: Set<String> = []
+
+    var body: some View {
+        List(names, id: \.self) { name in
+            Toggle(name, isOn: Binding(
+                get: { !off.contains(name) },
+                set: { on in
+                    if on { off.remove(name) } else { off.insert(name) }
+                }
+            ))
+        }
+        .navigationTitle(title)
+    }
+}
+
+struct GeneralPage: View {
+    @EnvironmentObject var os: OSState
     @State private var confirmWipe = false
 
     var body: some View {
         List {
-            Section("User") {
-                TextField("Username", text: $os.username)
+            Section {
+                NavigationLink("About") { AboutApp().navigationTitle("About") }
+                NavigationLink("Software Update") { UpdatePage() }
+                NavigationLink("Storage") { StoragePage() }
             }
-            Section("Pretend switches") {
-                Toggle(isOn: $wifi) { Row(tile: "WF", color: .blue, title: "Troll-Fi") }
-                Toggle(isOn: $blue) { Row(tile: "BT", color: .indigo, title: "Bluetroll") }
-                Toggle(isOn: $turbo) { Row(tile: "TB", color: .red, title: "Turbo Mode") }
-            }
-            Section("Wallpaper") {
-                Picker("Wallpaper", selection: $os.wallpaper) {
-                    Text("Ocean").tag(0)
-                    Text("Jungle").tag(1)
-                    Text("Sunset").tag(2)
-                    Text("Night").tag(3)
-                }
-                .pickerStyle(.segmented)
-            }
-            Section("Power") {
-                Button { os.phase = .lock; os.openApp = nil } label: {
-                    Row(tile: "LK", color: .gray, title: "Lock")
-                }
-                Button { os.reboot() } label: { Row(tile: "RB", color: .orange, title: "Reboot") }
-                Button { os.shutdown() } label: { Row(tile: "OFF", color: .red, title: "Shut Down") }
-                Button { confirmWipe = true } label: {
-                    Row(tile: "X", color: .pink, title: "Reset TrollOS")
-                }
+            Section {
+                Button("Lock Screen") { os.openApp = nil; os.phase = .lock }
+                Button("Restart") { os.reboot() }
+                Button("Shut Down") { os.shutdown() }
+                Button("Erase All Content and Settings", role: .destructive) { confirmWipe = true }
             }
         }
-        .alert("Reset TrollOS?", isPresented: $confirmWipe) {
-            Button("Reset", role: .destructive) { os.wipe() }
+        .navigationTitle("General")
+        .alert("Erase TrollOS?", isPresented: $confirmWipe) {
+            Button("Erase", role: .destructive) { os.wipe() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Only resets this pretend system.")
+            Text("This resets TrollOS inside this app.")
         }
+    }
+}
+
+struct UpdatePage: View {
+    @EnvironmentObject var os: OSState
+    @State private var progress = 0.0
+    @State private var running = false
+
+    var body: some View {
+        List {
+            Section {
+                Text("TrollOS 3.4").font(.headline)
+                Text("Smoother animations and 33% more troll.")
+                if running { ProgressView(value: progress) }
+                Button(running ? "Downloading..." : "Download and Install") { running = true }
+                    .disabled(running)
+            }
+        }
+        .navigationTitle("Software Update")
+        .task(id: running) {
+            guard running else { return }
+            for i in 1...25 {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                if Task.isCancelled { return }
+                progress = Double(i) / 25
+            }
+            running = false
+            os.popup("Update Failed", "The troll ate the update. Try again later.")
+        }
+    }
+}
+
+struct StoragePage: View {
+    var body: some View {
+        List {
+            Section("33.3 GB of 64 GB used") {
+                ProgressView(value: 0.52)
+                Row(tile: "APP", color: .blue, title: "Apps", value: "12.1 GB")
+                Row(tile: "MED", color: .orange, title: "Memes", value: "18.0 GB")
+                Row(tile: "OS", color: .gray, title: "TrollOS", value: "3.2 GB")
+            }
+        }
+        .navigationTitle("Storage")
+    }
+}
+
+struct DisplayPage: View {
+    @EnvironmentObject var os: OSState
+    @State private var trueTone = true
+    var body: some View {
+        List {
+            Section("Brightness") { Slider(value: $os.brightness, in: 0.2...1) }
+            Toggle("True Troll Tone", isOn: $trueTone)
+        }
+        .navigationTitle("Display")
+    }
+}
+
+struct WallpaperPage: View {
+    @EnvironmentObject var os: OSState
+    private let names = ["Ocean", "Jungle", "Sunset", "Night"]
+    var body: some View {
+        List(0..<4, id: \.self) { i in
+            Button {
+                os.wallpaper = i
+                os.notify("Wallpaper", "\(names[i]) applied.")
+            } label: {
+                HStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(LinearGradient(colors: OSState.wallpapers[i], startPoint: .top, endPoint: .bottom))
+                        .frame(width: 44, height: 70)
+                    Text(names[i])
+                    Spacer()
+                    if os.wallpaper == i { Text("Selected").foregroundColor(.secondary) }
+                }
+            }
+        }
+        .navigationTitle("Wallpaper")
+    }
+}
+
+struct BatteryPage: View {
+    @EnvironmentObject var os: OSState
+    @State private var low = false
+    var body: some View {
+        List {
+            Toggle("Low Power Mode", isOn: $low)
+            Row(tile: "%", color: .green, title: "Level", value: "33%")
+            Button("Check Battery Health") {
+                os.popup("Battery Health", "Maximum capacity: 333%. Impressive.")
+            }
+        }
+        .navigationTitle("Battery")
     }
 }
 
@@ -419,7 +745,7 @@ struct TerminalApp: View {
         case "ls": lines.append("Bananas/  Memes/  System/  readme.txt")
         case "whoami": lines.append(os.username)
         case "date": lines.append(Date().formatted())
-        case "ver": lines.append("TrollOS 3.33 (pretend)")
+        case "ver": lines.append("TrollOS 3.33")
         case "troll": lines.append("u mad? :)")
         case "neofetch": lines.append("OS: TrollOS\nKernel: banana-3.33\nRAM: 333 coconuts")
         default: lines.append("\(cmd): not found")
@@ -432,7 +758,7 @@ struct FilesApp: View {
     private let folders: [(String, [String])] = [
         ("Bananas", ["ripe.txt", "green.txt"]),
         ("Memes", ["troll.meme", "classic.meme"]),
-        ("System", ["kernel.fake", "boot.pretend"])
+        ("System", ["kernel.bin", "boot.cfg"])
     ]
 
     var body: some View {
@@ -441,7 +767,7 @@ struct FilesApp: View {
                 Section(folder.0) {
                     ForEach(folder.1, id: \.self) { file in
                         Button {
-                            os.popup(file, "This is a pretend file in \(folder.0).")
+                            os.popup(file, "Located in \(folder.0).")
                         } label: {
                             Row(tile: "F", color: .blue, title: file)
                         }
@@ -554,7 +880,7 @@ struct StoreApp: View {
                     os.popup("Removed", "\(item) was removed.")
                 } else {
                     os.installed.insert(item)
-                    os.popup("Installed", "\(item) is pretend installed.")
+                    os.popup("Installed", "\(item) is ready to use.")
                 }
             } label: {
                 Row(tile: String(item.prefix(2)), color: .purple, title: item,
@@ -572,12 +898,11 @@ struct JailApp: View {
     var body: some View {
         VStack(spacing: 24) {
             AppTile(app: .jail, size: 100)
-            Text(os.jailbroken ? "TrollOS is pretend jailbroken" : "TrollOS is locked")
+            Text(os.jailbroken ? "Jailbroken" : "Not jailbroken")
             ProgressView(value: os.jailbroken ? 1 : progress).padding(.horizontal, 40)
             Button(running ? "Working..." : "Jailbreak") { running = true }
                 .buttonStyle(.borderedProminent)
                 .disabled(running || os.jailbroken)
-            Text("Simulation only").font(.caption).foregroundColor(.gray)
         }
         .task(id: running) {
             guard running else { return }
@@ -588,7 +913,7 @@ struct JailApp: View {
             }
             running = false
             os.jailbroken = true
-            os.popup("Done", "Pretend jailbreak complete. Nothing real changed.")
+            os.popup("Done", "Jailbreak complete.")
         }
     }
 }
@@ -661,7 +986,7 @@ struct BrowserApp: View {
                 Button("Go") { page = address }
             }
             Text("TrollNet").font(.largeTitle).bold()
-            Text(page == "troll://home" ? "Welcome to the pretend internet."
+            Text(page == "troll://home" ? "Welcome to TrollNet."
                  : "404: \(page) was eaten by a troll.")
                 .multilineTextAlignment(.center)
             Button("Home Page") { address = "troll://home"; page = address }
@@ -679,9 +1004,11 @@ struct AboutApp: View {
             Row(tile: "US", color: .blue, title: "User", value: os.username)
             Row(tile: "PK", color: .purple, title: "Packages", value: "\(os.installed.count)")
             Row(tile: "ME", color: .orange, title: "Made by", value: "You")
-            Text("TrollOS is a fake emulator made for fun. It does not change your device.")
-                .font(.footnote)
-                .foregroundColor(.secondary)
+            Section("Legal") {
+                Text("TrollOS is a simulation made for fun. It does not change your device.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
         }
     }
 }
