@@ -1,1014 +1,1092 @@
 import SwiftUI
+import UIKit
 
-// TrollOS runs entirely inside this app.
+// Fiji Studio: design and play your own jailbreak-style prototypes.
 
 @main
 struct Fiji333App: App {
-    @StateObject private var os = OSState()
+    @StateObject private var store = Store()
     var body: some Scene {
         WindowGroup {
             RootView()
-                .environmentObject(os)
-                .statusBarHidden(true)
-                .persistentSystemOverlays(.hidden)
+                .environmentObject(store)
+                .preferredColorScheme(.dark)
         }
     }
 }
 
-// MARK: - System
+// MARK: - Model
 
-enum Phase { case off, boot, lock, home }
+let canvasSize = CGSize(width: 390, height: 844)
 
-enum AppID: String, CaseIterable, Identifiable {
-    case settings = "Settings"
-    case terminal = "Terminal"
-    case files = "Files"
-    case notes = "Notes"
-    case calc = "Calc"
-    case clock = "Clock"
-    case store = "Store"
-    case jail = "fiji333"
-    case game = "TapTroll"
-    case paint = "Paint"
-    case browser = "Web"
-    case about = "About"
+let palette: [Color] = [
+    .black, Color(white: 0.12), Color(white: 0.25), .gray, .white, .red,
+    .orange, .yellow, .green, .teal, .blue, .indigo, .purple, .pink, .brown, .clear
+]
 
+enum Kind: String, Codable, CaseIterable, Identifiable {
+    case rect = "Rectangle"
+    case circle = "Ellipse"
+    case text = "Text"
+    case button = "Button"
+    case row = "Settings Row"
+    case toggle = "Toggle"
+    case progress = "Progress Bar"
+    case console = "Console"
     var id: String { rawValue }
+}
 
-    var tile: String {
-        switch self {
-        case .settings: return "SET"
-        case .terminal: return ">_"
-        case .files: return "DIR"
-        case .notes: return "TXT"
-        case .calc: return "+-"
-        case .clock: return "12:00"
-        case .store: return "GET"
-        case .jail: return "333"
-        case .game: return "TAP"
-        case .paint: return "ART"
-        case .browser: return "WWW"
-        case .about: return "?"
-        }
+enum TapAction: String, Codable, CaseIterable, Identifiable {
+    case none = "Nothing"
+    case goTo = "Go to screen"
+    case back = "Go back"
+    case popup = "Show popup"
+    case load = "Fill progress bars"
+    case respring = "Respring"
+    var id: String { rawValue }
+}
+
+struct Element: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var kind: Kind
+    var x: Double = 195
+    var y: Double = 422
+    var w: Double = 200
+    var h: Double = 60
+    var text = ""
+    var fill = 10
+    var ink = 4
+    var radius: Double = 12
+    var fontSize: Double = 17
+    var opacity: Double = 1
+    var action: TapAction = .none
+    var target: UUID?
+    var popupTitle = "Alert"
+    var popupText = "Something happened."
+}
+
+struct Frame: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+    var fill = 0
+    var elements: [Element] = []
+}
+
+struct Project: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+    var frames: [Frame]
+}
+
+func makeElement(_ kind: Kind) -> Element {
+    var e = Element(kind: kind)
+    switch kind {
+    case .rect: e.w = 200; e.h = 120; e.fill = 2
+    case .circle: e.w = 100; e.h = 100; e.fill = 12
+    case .text: e.text = "Text"; e.fontSize = 28; e.fill = 15
+    case .button: e.text = "Jailbreak"; e.radius = 16
+    case .row: e.text = "Tweaks"; e.w = 350; e.h = 52; e.fill = 1
+    case .toggle: e.text = "Enable tweaks"; e.w = 350; e.h = 52; e.fill = 1
+    case .progress: e.w = 300; e.h = 10; e.fill = 8
+    case .console:
+        e.text = "[*] starting\n[+] loading modules\n[+] applying tweaks\n[*] done"
+        e.w = 350; e.h = 260; e.fill = 1; e.ink = 8; e.fontSize = 13
+    }
+    return e
+}
+
+// MARK: - Templates
+
+enum Templates {
+    static func blank() -> Project {
+        Project(name: "Untitled", frames: [Frame(name: "Screen 1")])
     }
 
-    var color: Color {
-        switch self {
-        case .settings: return .gray
-        case .terminal: return .black
-        case .files: return .blue
-        case .notes: return .yellow
-        case .calc: return .orange
-        case .clock: return .indigo
-        case .store: return .purple
-        case .jail: return .teal
-        case .game: return .red
-        case .paint: return .pink
-        case .browser: return .cyan
-        case .about: return .brown
-        }
+    static func jailbreak() -> Project {
+        var home = Frame(name: "Home")
+        var done = Frame(name: "Done")
+
+        var title = makeElement(.text)
+        title.text = "fiji333"; title.y = 150; title.w = 340; title.fontSize = 48
+        var logo = makeElement(.rect)
+        logo.y = 290; logo.w = 130; logo.h = 130; logo.fill = 9; logo.radius = 30
+        var bar = makeElement(.progress)
+        bar.y = 520
+        var go = makeElement(.button)
+        go.y = 640; go.w = 280
+        go.action = .load
+        go.target = done.id
+        home.elements = [title, logo, bar, go]
+
+        var ok = makeElement(.text)
+        ok.text = "Jailbroken"; ok.y = 120; ok.w = 340; ok.ink = 8; ok.fontSize = 40
+        var log = makeElement(.console)
+        log.y = 330
+        var row = makeElement(.row)
+        row.y = 530
+        row.action = .popup
+        row.popupTitle = "Tweaks"
+        row.popupText = "No tweaks installed yet."
+        var spring = makeElement(.button)
+        spring.text = "Respring"; spring.y = 640; spring.w = 280; spring.action = .respring
+        var back = makeElement(.button)
+        back.text = "Back"; back.y = 720; back.w = 280; back.fill = 2; back.action = .back
+        done.elements = [ok, log, row, spring, back]
+
+        return Project(name: "Jailbreak Starter", frames: [home, done])
+    }
+
+    static func terminal() -> Project {
+        var screen = Frame(name: "Shell")
+        var log = makeElement(.console)
+        log.y = 360; log.h = 520
+        var run = makeElement(.button)
+        run.text = "Run"; run.y = 700; run.fill = 8; run.ink = 0
+        run.action = .popup
+        run.popupTitle = "Shell"
+        run.popupText = "Command finished."
+        screen.elements = [log, run]
+        return Project(name: "Hacker Console", frames: [screen])
     }
 }
+
+// MARK: - Store
 
 @MainActor
-final class OSState: ObservableObject {
-    @Published var phase: Phase = .boot
-    @Published var openApp: AppID?
-    @Published var installed: Set<String> = []
-    @Published var jailbroken = false
-    @Published var popupTitle = ""
-    @Published var popupText = ""
-    @Published var showPopup = false
-    @Published var banner: Banner?
-    @Published var showControls = false
-    @Published var brightness = 1.0
-    @AppStorage("airplane") var airplane = false
-    @AppStorage("wifi") var wifi = true
-    @AppStorage("bluetooth") var bluetooth = true
-    @AppStorage("wallpaper") var wallpaper = 0
-    @AppStorage("username") var username = "troll"
-
-    static let wallpapers: [[Color]] = [
-        [.blue, .purple], [.teal, .green], [.orange, .pink], [.black, .gray]
-    ]
-
-    var gradient: LinearGradient {
-        let list = Self.wallpapers
-        return LinearGradient(colors: list[wallpaper % list.count],
-                              startPoint: .topLeading, endPoint: .bottomTrailing)
+final class Store: ObservableObject {
+    @Published var projects: [Project] = [] {
+        didSet { save() }
     }
+    @Published var editing: UUID?
+    @Published var playing: UUID?
+    @Published var playStart: UUID?
+    private let key = "fijistudio.projects"
 
-    func notify(_ title: String, _ text: String) {
-        let item = Banner(title: title, text: text)
-        withAnimation(.spring()) { banner = item }
-        Task {
-            try? await Task.sleep(nanoseconds: 3_500_000_000)
-            if banner?.id == item.id { withAnimation { banner = nil } }
+    init() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let list = try? JSONDecoder().decode([Project].self, from: data) {
+            projects = list
+        } else {
+            projects = [Templates.jailbreak()]
         }
     }
 
-    func popup(_ title: String, _ text: String) {
-        popupTitle = title
-        popupText = text
-        showPopup = true
+    private func save() {
+        if let data = try? JSONEncoder().encode(projects) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
     }
 
-    func reboot() {
-        openApp = nil
-        showControls = false
-        banner = nil
-        phase = .boot
+    func add(_ project: Project) {
+        projects.insert(project, at: 0)
     }
 
-    func shutdown() {
-        openApp = nil
-        showControls = false
-        banner = nil
-        phase = .off
+    func update(_ project: Project) {
+        if let i = projects.firstIndex(where: { $0.id == project.id }) {
+            projects[i] = project
+        }
     }
 
-    func wipe() {
-        installed = []
-        jailbroken = false
-        wallpaper = 0
-        username = "troll"
-        reboot()
+    func play(_ project: UUID, from frame: UUID? = nil) {
+        playStart = frame
+        playing = project
     }
-}
-
-struct Banner: Identifiable {
-    let id = UUID()
-    let title: String
-    let text: String
 }
 
 struct RootView: View {
-    @EnvironmentObject var os: OSState
-
+    @EnvironmentObject var store: Store
     var body: some View {
         ZStack {
-            switch os.phase {
-            case .off: OffView()
-            case .boot: BootView()
-            case .lock: LockView()
-            case .home: DesktopView()
+            if let id = store.editing, let project = store.projects.first(where: { $0.id == id }) {
+                EditorView(project: project)
+                    .id(id)
+            } else {
+                HomeView()
             }
-            Color.black
-                .opacity((1 - os.brightness) * 0.7)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            if let banner = os.banner {
-                VStack {
-                    BannerView(banner: banner)
-                    Spacer()
-                }
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
-        .preferredColorScheme(.dark)
-        .alert(os.popupTitle, isPresented: $os.showPopup) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(os.popupText)
-        }
-    }
-}
-
-struct BannerView: View {
-    @EnvironmentObject var os: OSState
-    let banner: Banner
-    var body: some View {
-        HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 9)
-                .fill(Color.green)
-                .frame(width: 38, height: 38)
-                .overlay(Text("T").bold())
-            VStack(alignment: .leading) {
-                Text(banner.title).bold()
-                Text(banner.text).font(.subheadline)
-            }
-            Spacer()
-            Text("now").font(.caption).foregroundColor(.secondary)
-        }
-        .padding(12)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .padding(.horizontal, 10)
-        .onTapGesture { withAnimation { os.banner = nil } }
-    }
-}
-
-struct OffView: View {
-    @EnvironmentObject var os: OSState
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            Button("Power On") { os.phase = .boot }
-                .buttonStyle(.bordered)
-        }
-    }
-}
-
-struct BootView: View {
-    @EnvironmentObject var os: OSState
-    @State private var progress = 0.0
-    
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            VStack(spacing: 24) {
-                Text("TrollOS")
-                    .font(.system(size: 46, weight: .black, design: .rounded))
-                ProgressView(value: progress).frame(width: 180).tint(.white)
-            }
-        }
-        .task {
-            for i in 1...40 {
-                try? await Task.sleep(nanoseconds: 80_000_000)
-                if Task.isCancelled { return }
-                progress = Double(i) / 40
-            }
-            os.phase = .lock
-        }
-    }
-}
-
-struct LockView: View {
-    @EnvironmentObject var os: OSState
-    var body: some View {
-        ZStack {
-            os.gradient.ignoresSafeArea()
-            VStack(spacing: 12) {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    VStack {
-                        Text(context.date, format: .dateTime.hour().minute())
-                            .font(.system(size: 72, weight: .thin))
-                        Text(context.date, format: .dateTime.weekday(.wide).day().month(.wide))
-                    }
-                }
-                .padding(.top, 60)
-                Spacer()
-                Text("Swipe up to unlock").font(.headline)
-                Capsule().frame(width: 140, height: 5).padding(.bottom, 10)
-            }
-            .foregroundColor(.white)
-        }
-        .contentShape(Rectangle())
-        .gesture(DragGesture(minimumDistance: 30).onEnded { drag in
-            if drag.translation.height < -60 {
-                withAnimation { os.phase = .home }
-                os.notify("Software Update", "TrollOS 3.4 is available in Settings.")
-            }
-        })
-    }
-}
-
-// MARK: - Home screen
-
-struct AppTile: View {
-    let app: AppID
-    var size: CGFloat = 62
-    var body: some View {
-        Text(app.tile)
-            .font(.system(size: size * 0.24, weight: .bold, design: .rounded))
-            .foregroundColor(.white)
-            .frame(width: size, height: size)
-            .background(app.color)
-            .clipShape(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
-    }
-}
-
-struct DesktopView: View {
-    @EnvironmentObject var os: OSState
-    private let columns = Array(repeating: GridItem(.flexible()), count: 4)
-    private let dock: [AppID] = [.terminal, .files, .browser, .settings]
-
-    @State private var search = ""
-
-    private var visible: [AppID] {
-        if search.isEmpty { return AppID.allCases.filter { !dock.contains($0) } }
-        return AppID.allCases.filter { $0.rawValue.localizedCaseInsensitiveContains(search) }
-    }
-
-    var body: some View {
-        ZStack {
-            os.gradient.ignoresSafeArea()
-            VStack {
-                HStack {
-                    TextField("Search", text: $search)
-                        .autocorrectionDisabled()
-                        .padding(10)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Capsule())
-                    Button("Controls") { withAnimation { os.showControls = true } }
-                        .font(.subheadline.bold())
-                        .padding(10)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Capsule())
-                }
-                .padding(.horizontal)
-                LazyVGrid(columns: columns, spacing: 22) {
-                    ForEach(visible) { app in
-                        icon(app, label: true)
-                    }
-                }
-                .padding(.top, 24)
-                Spacer()
-                if !os.installed.isEmpty {
-                    Text("Installed: \(os.installed.sorted().joined(separator: ", "))")
-                        .font(.caption)
-                }
-                HStack {
-                    ForEach(dock) { app in
-                        icon(app, label: false).frame(maxWidth: .infinity)
-                    }
-                }
-                .padding(.vertical, 14)
-                .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 26))
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
-            }
-            .foregroundColor(.white)
-            if let app = os.openApp {
-                AppWindow(app: app)
-                    .transition(.scale.combined(with: .opacity))
+            if let id = store.playing, let project = store.projects.first(where: { $0.id == id }) {
+                PlayerView(project: project, start: store.playStart)
                     .zIndex(1)
             }
-            if os.showControls {
-                ControlCentre()
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .zIndex(2)
-            }
         }
-    }
-
-    private func icon(_ app: AppID, label: Bool) -> some View {
-        Button {
-            withAnimation(.spring()) { os.openApp = app }
-        } label: {
-            VStack(spacing: 6) {
-                AppTile(app: app)
-                if label { Text(app.rawValue).font(.caption).foregroundColor(.white) }
-            }
-        }
+        .statusBarHidden(store.playing != nil)
+        .persistentSystemOverlays(store.playing != nil ? .hidden : .automatic)
     }
 }
 
-struct ControlCentre: View {
-    @EnvironmentObject var os: OSState
-    @State private var torch = false
-    @State private var volume = 0.5
+// MARK: - Home
 
-    var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .ignoresSafeArea()
-                .onTapGesture { withAnimation { os.showControls = false } }
-            VStack(spacing: 16) {
-                HStack(spacing: 14) {
-                    tile("Airplane", on: os.airplane, color: .orange) { os.airplane.toggle() }
-                    tile("Wi-Fi", on: os.wifi && !os.airplane, color: .blue) { os.wifi.toggle() }
-                }
-                HStack(spacing: 14) {
-                    tile("Bluetooth", on: os.bluetooth && !os.airplane, color: .blue) { os.bluetooth.toggle() }
-                    tile("Torch", on: torch, color: .yellow) { torch.toggle() }
-                }
-                VStack(alignment: .leading) {
-                    Text("Brightness")
-                    Slider(value: $os.brightness, in: 0.2...1)
-                    Text("Volume")
-                    Slider(value: $volume)
-                }
-                .padding()
-                .background(Color.black.opacity(0.35))
-                .clipShape(RoundedRectangle(cornerRadius: 20))
-                Button("Done") { withAnimation { os.showControls = false } }
-                    .buttonStyle(.borderedProminent)
-            }
-            .padding(30)
-        }
-    }
-
-    private func tile(_ title: String, on: Bool, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack {
-                Text(title).bold()
-                Text(on ? "On" : "Off").font(.caption)
-            }
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity, minHeight: 80)
-            .background(on ? color : Color.black.opacity(0.35))
-            .clipShape(RoundedRectangle(cornerRadius: 20))
-        }
-    }
-}
-
-struct AppWindow: View {
-    @EnvironmentObject var os: OSState
-    let app: AppID
+struct HomeView: View {
+    @EnvironmentObject var store: Store
+    @State private var renaming: Project?
+    @State private var newName = ""
+    @State private var deleting: Project?
+    @State private var message = ""
+    @State private var showMessage = false
+    @State private var showAbout = false
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                content.frame(maxWidth: .infinity, maxHeight: .infinity)
-                Capsule()
-                    .fill(Color.white)
-                    .frame(width: 140, height: 5)
-                    .frame(maxWidth: .infinity, minHeight: 30)
-                    .contentShape(Rectangle())
-                    .onTapGesture { close() }
-                    .gesture(DragGesture(minimumDistance: 10).onEnded { drag in
-                        if drag.translation.height < 0 { close() }
-                    })
+            List {
+                Section("New file") {
+                    Button("Blank design") { create(Templates.blank()) }
+                    Button("Template: Jailbreak Starter") { create(Templates.jailbreak()) }
+                    Button("Template: Hacker Console") { create(Templates.terminal()) }
+                    Button("Import from clipboard") { importProject() }
+                }
+                Section("Your files") {
+                    if store.projects.isEmpty {
+                        Text("No files yet").foregroundColor(.secondary)
+                    }
+                    ForEach(store.projects) { project in
+                        projectRow(project)
+                    }
+                }
             }
-            .navigationTitle(app.rawValue)
-            .navigationBarTitleDisplayMode(app == .settings ? .large : .inline)
+            .navigationTitle("Fiji Studio")
+            .toolbar {
+                Button("About") { showAbout = true }
+            }
+            .alert("Rename file", isPresented: Binding(
+                get: { renaming != nil },
+                set: { if !$0 { renaming = nil } }
+            )) {
+                TextField("Name", text: $newName)
+                Button("Save") { rename() }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert("Delete file?", isPresented: Binding(
+                get: { deleting != nil },
+                set: { if !$0 { deleting = nil } }
+            )) {
+                Button("Delete", role: .destructive) {
+                    store.projects.removeAll { $0.id == deleting?.id }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert(message, isPresented: $showMessage) {
+                Button("OK", role: .cancel) {}
+            }
+            .alert("Fiji Studio", isPresented: $showAbout) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("A design game. Prototypes are simulations and do not change your device.")
+            }
         }
-        .background(Color.black.ignoresSafeArea())
     }
 
-    private func close() {
-        withAnimation(.spring()) { os.openApp = nil }
+    private func projectRow(_ project: Project) -> some View {
+        HStack {
+            Button {
+                store.editing = project.id
+            } label: {
+                HStack(spacing: 12) {
+                    if let first = project.frames.first {
+                        Thumbnail(frame: first)
+                    }
+                    VStack(alignment: .leading) {
+                        Text(project.name).foregroundColor(.primary)
+                        Text("\(project.frames.count) screens")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            Menu("More") {
+                Button("Play") { store.play(project.id) }
+                Button("Rename") { newName = project.name; renaming = project }
+                Button("Duplicate") {
+                    var copy = project
+                    copy.id = UUID()
+                    copy.name += " copy"
+                    store.add(copy)
+                }
+                Button("Copy to clipboard") { export(project) }
+                Button("Delete", role: .destructive) { deleting = project }
+            }
+        }
+    }
+
+    private func create(_ project: Project) {
+        store.add(project)
+        store.editing = project.id
+    }
+
+    private func rename() {
+        guard var project = renaming, !newName.isEmpty else { return }
+        project.name = newName
+        store.update(project)
+    }
+
+    private func export(_ project: Project) {
+        if let data = try? JSONEncoder().encode(project),
+           let string = String(data: data, encoding: .utf8) {
+            UIPasteboard.general.string = string
+            show("Copied to clipboard")
+        }
+    }
+
+    private func importProject() {
+        if let string = UIPasteboard.general.string,
+           let data = string.data(using: .utf8),
+           var project = try? JSONDecoder().decode(Project.self, from: data),
+           !project.frames.isEmpty {
+            project.id = UUID()
+            store.add(project)
+            show("Imported \(project.name)")
+        } else {
+            show("No design found on the clipboard")
+        }
+    }
+
+    private func show(_ text: String) {
+        message = text
+        showMessage = true
+    }
+}
+
+struct Thumbnail: View {
+    let frame: Frame
+    var body: some View {
+        ZStack {
+            palette[frame.fill]
+            ForEach(frame.elements) { element in
+                ElementView(element: element)
+                    .position(x: element.x, y: element.y)
+            }
+        }
+        .frame(width: canvasSize.width, height: canvasSize.height)
+        .scaleEffect(0.12)
+        .frame(width: canvasSize.width * 0.12, height: canvasSize.height * 0.12)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray))
+        .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Element rendering
+
+struct ElementView: View {
+    let element: Element
+    var progress: Double = 0.35
+    var isOn = false
+    var lines: Int?
+
+    var body: some View {
+        content
+            .frame(width: element.w, height: element.h)
+            .opacity(element.opacity)
+    }
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: element.radius, style: .continuous)
+    }
+
+    private var font: Font {
+        .system(size: element.fontSize, weight: .semibold, design: .rounded)
     }
 
     @ViewBuilder private var content: some View {
-        switch app {
-        case .settings: SettingsApp()
-        case .terminal: TerminalApp()
-        case .files: FilesApp()
-        case .notes: NotesApp()
-        case .calc: CalcApp()
-        case .clock: ClockApp()
-        case .store: StoreApp()
-        case .jail: JailApp()
-        case .game: GameApp()
-        case .paint: PaintApp()
-        case .browser: BrowserApp()
-        case .about: AboutApp()
+        switch element.kind {
+        case .rect:
+            shape.fill(palette[element.fill])
+        case .circle:
+            Ellipse().fill(palette[element.fill])
+        case .text, .button:
+            Text(element.text)
+                .font(font)
+                .multilineTextAlignment(.center)
+                .foregroundColor(palette[element.ink])
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(shape.fill(palette[element.fill]))
+        case .row:
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(Color.orange)
+                    .frame(width: 30, height: 30)
+                    .overlay(Text(String(element.text.prefix(2))).font(.caption.bold()))
+                Text(element.text).font(font).foregroundColor(palette[element.ink])
+                Spacer()
+                Text(">").foregroundColor(.gray)
+            }
+            .padding(.horizontal, 14)
+            .frame(maxHeight: .infinity)
+            .background(shape.fill(palette[element.fill]))
+        case .toggle:
+            HStack {
+                Text(element.text).font(font).foregroundColor(palette[element.ink])
+                Spacer()
+                Capsule()
+                    .fill(isOn ? Color.green : Color(white: 0.35))
+                    .frame(width: 51, height: 31)
+                    .overlay(alignment: isOn ? .trailing : .leading) {
+                        Circle().fill(Color.white).padding(2)
+                    }
+            }
+            .padding(.horizontal, 14)
+            .frame(maxHeight: .infinity)
+            .background(shape.fill(palette[element.fill]))
+        case .progress:
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color(white: 0.3))
+                    Capsule()
+                        .fill(palette[element.fill])
+                        .frame(width: geo.size.width * progress)
+                }
+            }
+        case .console:
+            Text(visibleText)
+                .font(.system(size: element.fontSize, design: .monospaced))
+                .foregroundColor(palette[element.ink])
+                .padding(12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(shape.fill(palette[element.fill]))
+                .clipped()
         }
+    }
+
+    private var visibleText: String {
+        guard let count = lines else { return element.text }
+        let all = element.text.components(separatedBy: "\n")
+        return all.prefix(count).joined(separator: "\n")
     }
 }
 
-// MARK: - Apps
+// MARK: - Editor
 
-struct Row: View {
-    let tile: String
-    let color: Color
-    let title: String
-    var value: String = ""
+@MainActor
+final class EditorModel: ObservableObject {
+    @Published var project: Project
+    @Published var frameIndex = 0
+    @Published var selected: UUID?
+    @Published var past: [Project] = []
+    @Published var future: [Project] = []
+
+    init(project: Project) {
+        self.project = project
+    }
+
+    var frame: Frame {
+        get { project.frames[min(frameIndex, project.frames.count - 1)] }
+        set { project.frames[min(frameIndex, project.frames.count - 1)] = newValue }
+    }
+
+    var element: Element? {
+        frame.elements.first { $0.id == selected }
+    }
+
+    func checkpoint() {
+        if past.last == project { return }
+        past.append(project)
+        if past.count > 50 { past.removeFirst() }
+        future = []
+    }
+
+    func undo() {
+        while past.last == project { past.removeLast() }
+        guard let previous = past.popLast() else { return }
+        future.append(project)
+        restore(previous)
+    }
+
+    func redo() {
+        guard let next = future.popLast() else { return }
+        past.append(project)
+        restore(next)
+    }
+
+    private func restore(_ value: Project) {
+        project = value
+        frameIndex = min(frameIndex, value.frames.count - 1)
+        selected = nil
+    }
+
+    func add(_ kind: Kind) {
+        checkpoint()
+        let new = makeElement(kind)
+        frame.elements.append(new)
+        selected = new.id
+    }
+
+    func change(_ id: UUID, _ edit: (inout Element) -> Void) {
+        if let i = frame.elements.firstIndex(where: { $0.id == id }) {
+            edit(&frame.elements[i])
+        }
+    }
+
+    func duplicate() {
+        guard var copy = element else { return }
+        checkpoint()
+        copy.id = UUID()
+        copy.x += 16
+        copy.y += 16
+        frame.elements.append(copy)
+        selected = copy.id
+    }
+
+    func delete() {
+        guard let id = selected else { return }
+        checkpoint()
+        frame.elements.removeAll { $0.id == id }
+        selected = nil
+    }
+
+    func reorder(toFront: Bool) {
+        guard let item = element else { return }
+        checkpoint()
+        frame.elements.removeAll { $0.id == item.id }
+        if toFront { frame.elements.append(item) }
+        else { frame.elements.insert(item, at: 0) }
+    }
+
+    func addFrame(copying: Bool) {
+        checkpoint()
+        var new = copying ? frame : Frame(name: "")
+        new.id = UUID()
+        new.name = "Screen \(project.frames.count + 1)"
+        if copying {
+            for i in new.elements.indices { new.elements[i].id = UUID() }
+        }
+        project.frames.append(new)
+        frameIndex = project.frames.count - 1
+        selected = nil
+    }
+
+    func deleteFrame() {
+        guard project.frames.count > 1 else { return }
+        checkpoint()
+        project.frames.remove(at: frameIndex)
+        frameIndex = max(0, frameIndex - 1)
+        selected = nil
+    }
+}
+
+enum Panel: String, Identifiable {
+    case design, layers, screen
+    var id: String { rawValue }
+}
+
+struct EditorView: View {
+    @EnvironmentObject var store: Store
+    @StateObject private var model: EditorModel
+    @State private var panel: Panel?
+    @State private var snap = true
+
+    init(project: Project) {
+        _model = StateObject(wrappedValue: EditorModel(project: project))
+    }
+
     var body: some View {
-        HStack(spacing: 12) {
-            Text(tile)
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .frame(width: 30, height: 30)
-                .background(color)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            Text(title).foregroundColor(.primary)
+        VStack(spacing: 0) {
+            topBar
+            frameTabs
+            CanvasView(model: model, snap: snap)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(white: 0.08))
+            if model.selected != nil {
+                selectionBar
+            }
+            bottomBar
+        }
+        .background(Color(white: 0.13).ignoresSafeArea())
+        .sheet(item: $panel) { item in
+            Group {
+                switch item {
+                case .design: InspectorView(model: model)
+                case .layers: LayersView(model: model)
+                case .screen: ScreenView(model: model)
+                }
+            }
+            .presentationDetents([.medium, .large])
+        }
+        .onChange(of: model.project) { value in
+            store.update(value)
+        }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 14) {
+            Button("Files") { store.editing = nil }
             Spacer()
-            Text(value).foregroundColor(.secondary)
+            Text(model.project.name).bold().lineLimit(1)
+            Spacer()
+            Button("Undo") { model.undo() }.disabled(model.past.isEmpty)
+            Button("Redo") { model.redo() }.disabled(model.future.isEmpty)
+            Button("Play") {
+                store.update(model.project)
+                store.play(model.project.id, from: model.frame.id)
+            }
+            .buttonStyle(.borderedProminent)
         }
+        .font(.subheadline)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
     }
-}
 
-struct SettingsApp: View {
-    @EnvironmentObject var os: OSState
-    @State private var search = ""
-
-    var body: some View {
-        List {
-            Section {
-                NavigationLink { ProfilePage() } label: {
-                    HStack(spacing: 14) {
-                        Circle()
-                            .fill(Color.gray)
-                            .frame(width: 56, height: 56)
-                            .overlay(Text(String(os.username.prefix(1)).uppercased()).font(.title2.bold()))
-                        VStack(alignment: .leading) {
-                            Text(os.username).font(.title3)
-                            Text("Local profile").font(.caption).foregroundColor(.secondary)
-                        }
+    private var frameTabs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack {
+                ForEach(Array(model.project.frames.enumerated()), id: \.element.id) { index, frame in
+                    Button(frame.name) {
+                        model.frameIndex = index
+                        model.selected = nil
                     }
+                    .buttonStyle(.bordered)
+                    .tint(index == model.frameIndex ? .blue : .gray)
                 }
+                Button("+ Screen") { model.addFrame(copying: false) }
             }
-            Section {
-                Toggle(isOn: $os.airplane) { Row(tile: "AIR", color: .orange, title: "Airplane Mode") }
-                NavigationLink { WiFiPage() } label: {
-                    Row(tile: "WF", color: .blue, title: "Wi-Fi",
-                        value: os.wifi && !os.airplane ? "TrollNet" : "Off")
-                }
-                Toggle(isOn: $os.bluetooth) { Row(tile: "BT", color: .blue, title: "Bluetooth") }
-            }
-            Section {
-                link("NO", .red, "Notifications") {
-                    SwitchPage(title: "Notifications", names: ["Allow Notifications", "Sounds", "Badges", "Show Previews"])
-                }
-                link("SN", .pink, "Sounds & Haptics") {
-                    SwitchPage(title: "Sounds & Haptics", names: ["Keyboard Clicks", "Lock Sound", "System Haptics"])
-                }
-                link("FO", .indigo, "Focus") {
-                    SwitchPage(title: "Focus", names: ["Do Not Disturb", "Sleep", "Work"])
-                }
-            }
-            Section {
-                link("GN", .gray, "General") { GeneralPage() }
-                link("DS", .blue, "Display & Brightness") { DisplayPage() }
-                link("WP", .teal, "Wallpaper") { WallpaperPage() }
-                link("BAT", .green, "Battery") { BatteryPage() }
-                link("PR", .blue, "Privacy & Security") {
-                    SwitchPage(title: "Privacy & Security", names: ["Location Services", "Tracking Requests", "Analytics"])
-                }
-            }
-        }
-        .searchable(text: $search)
-        .onSubmit(of: .search) {
-            os.popup("Search", "No results for \"\(search)\".")
+            .font(.caption)
+            .padding(.horizontal)
+            .padding(.bottom, 6)
         }
     }
 
-    private func link<V: View>(_ tile: String, _ color: Color, _ title: String,
-                               @ViewBuilder page: @escaping () -> V) -> some View {
-        NavigationLink { page() } label: { Row(tile: tile, color: color, title: title) }
-    }
-}
-
-struct ProfilePage: View {
-    @EnvironmentObject var os: OSState
-    var body: some View {
-        List {
-            Section("Name") { TextField("Name", text: $os.username) }
+    private var selectionBar: some View {
+        HStack {
+            Button("Edit") { model.checkpoint(); panel = .design }
+            Spacer()
+            Button("Duplicate") { model.duplicate() }
+            Spacer()
+            Button("Front") { model.reorder(toFront: true) }
+            Spacer()
+            Button("Back") { model.reorder(toFront: false) }
+            Spacer()
+            Button("Delete", role: .destructive) { model.delete() }
         }
-        .navigationTitle("Profile")
+        .font(.subheadline)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    private var bottomBar: some View {
+        HStack {
+            Menu("+ Insert") {
+                ForEach(Kind.allCases) { kind in
+                    Button(kind.rawValue) { model.add(kind) }
+                }
+            }
+            Spacer()
+            Button("Layers") { panel = .layers }
+            Spacer()
+            Button("Screen") { model.checkpoint(); panel = .screen }
+            Spacer()
+            Button(snap ? "Snap On" : "Snap Off") { snap.toggle() }
+        }
+        .padding()
+        .background(Color(white: 0.17))
     }
 }
 
-struct WiFiPage: View {
-    @EnvironmentObject var os: OSState
-    @State private var chosen = ""
-    @State private var asking = false
-    private let networks = ["TrollNet", "Coconut-5G", "FBI Van", "Free Bananas"]
+struct CanvasView: View {
+    @ObservedObject var model: EditorModel
+    let snap: Bool
+    @State private var origin: CGPoint?
 
     var body: some View {
-        List {
-            Toggle("Wi-Fi", isOn: $os.wifi)
-            if os.wifi && !os.airplane {
-                Section("Networks") {
-                    ForEach(networks, id: \.self) { name in
-                        Button(name) { chosen = name; asking = true }
-                    }
+        GeometryReader { geo in
+            let scale = max(0.1, min((geo.size.width - 24) / canvasSize.width,
+                                     (geo.size.height - 16) / canvasSize.height))
+            ZStack {
+                palette[model.frame.fill]
+                    .onTapGesture { model.selected = nil }
+                ForEach(model.frame.elements) { element in
+                    item(element)
                 }
             }
+            .frame(width: canvasSize.width, height: canvasSize.height)
+            .coordinateSpace(name: "canvas")
+            .clipped()
+            .border(Color.gray.opacity(0.5))
+            .scaleEffect(scale)
+            .position(x: geo.size.width / 2, y: geo.size.height / 2)
         }
-        .navigationTitle("Wi-Fi")
-        .alert("Join \(chosen)?", isPresented: $asking) {
-            Button("Join") { os.notify("Wi-Fi", "Unable to join \(chosen). Signal too trolled.") }
-            Button("Cancel", role: .cancel) {}
-        }
+        .clipped()
+    }
+
+    private func item(_ element: Element) -> some View {
+        ElementView(element: element)
+            .contentShape(Rectangle())
+            .overlay {
+                if model.selected == element.id {
+                    Rectangle().stroke(Color.cyan, lineWidth: 3)
+                }
+            }
+            .onTapGesture { model.selected = element.id }
+            .gesture(drag(element))
+            .position(x: element.x, y: element.y)
+    }
+
+    private func drag(_ element: Element) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named("canvas"))
+            .onChanged { value in
+                if origin == nil {
+                    model.checkpoint()
+                    model.selected = element.id
+                    origin = CGPoint(x: element.x, y: element.y)
+                }
+                guard let start = origin else { return }
+                var x = Double(start.x + value.translation.width)
+                var y = Double(start.y + value.translation.height)
+                if snap {
+                    x = (x / 5).rounded() * 5
+                    y = (y / 5).rounded() * 5
+                    if abs(x - 195) < 10 { x = 195 }
+                }
+                model.change(element.id) { $0.x = x; $0.y = y }
+            }
+            .onEnded { _ in origin = nil }
     }
 }
 
-struct SwitchPage: View {
+// MARK: - Panels
+
+struct Swatches: View {
     let title: String
-    let names: [String]
-    @State private var off: Set<String> = []
-
-    var body: some View {
-        List(names, id: \.self) { name in
-            Toggle(name, isOn: Binding(
-                get: { !off.contains(name) },
-                set: { on in
-                    if on { off.remove(name) } else { off.insert(name) }
-                }
-            ))
-        }
-        .navigationTitle(title)
-    }
-}
-
-struct GeneralPage: View {
-    @EnvironmentObject var os: OSState
-    @State private var confirmWipe = false
-
-    var body: some View {
-        List {
-            Section {
-                NavigationLink("About") { AboutApp().navigationTitle("About") }
-                NavigationLink("Software Update") { UpdatePage() }
-                NavigationLink("Storage") { StoragePage() }
-            }
-            Section {
-                Button("Lock Screen") { os.openApp = nil; os.phase = .lock }
-                Button("Restart") { os.reboot() }
-                Button("Shut Down") { os.shutdown() }
-                Button("Erase All Content and Settings", role: .destructive) { confirmWipe = true }
-            }
-        }
-        .navigationTitle("General")
-        .alert("Erase TrollOS?", isPresented: $confirmWipe) {
-            Button("Erase", role: .destructive) { os.wipe() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This resets TrollOS inside this app.")
-        }
-    }
-}
-
-struct UpdatePage: View {
-    @EnvironmentObject var os: OSState
-    @State private var progress = 0.0
-    @State private var running = false
-
-    var body: some View {
-        List {
-            Section {
-                Text("TrollOS 3.4").font(.headline)
-                Text("Smoother animations and 33% more troll.")
-                if running { ProgressView(value: progress) }
-                Button(running ? "Downloading..." : "Download and Install") { running = true }
-                    .disabled(running)
-            }
-        }
-        .navigationTitle("Software Update")
-        .task(id: running) {
-            guard running else { return }
-            for i in 1...25 {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                if Task.isCancelled { return }
-                progress = Double(i) / 25
-            }
-            running = false
-            os.popup("Update Failed", "The troll ate the update. Try again later.")
-        }
-    }
-}
-
-struct StoragePage: View {
-    var body: some View {
-        List {
-            Section("33.3 GB of 64 GB used") {
-                ProgressView(value: 0.52)
-                Row(tile: "APP", color: .blue, title: "Apps", value: "12.1 GB")
-                Row(tile: "MED", color: .orange, title: "Memes", value: "18.0 GB")
-                Row(tile: "OS", color: .gray, title: "TrollOS", value: "3.2 GB")
-            }
-        }
-        .navigationTitle("Storage")
-    }
-}
-
-struct DisplayPage: View {
-    @EnvironmentObject var os: OSState
-    @State private var trueTone = true
-    var body: some View {
-        List {
-            Section("Brightness") { Slider(value: $os.brightness, in: 0.2...1) }
-            Toggle("True Troll Tone", isOn: $trueTone)
-        }
-        .navigationTitle("Display")
-    }
-}
-
-struct WallpaperPage: View {
-    @EnvironmentObject var os: OSState
-    private let names = ["Ocean", "Jungle", "Sunset", "Night"]
-    var body: some View {
-        List(0..<4, id: \.self) { i in
-            Button {
-                os.wallpaper = i
-                os.notify("Wallpaper", "\(names[i]) applied.")
-            } label: {
-                HStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(LinearGradient(colors: OSState.wallpapers[i], startPoint: .top, endPoint: .bottom))
-                        .frame(width: 44, height: 70)
-                    Text(names[i])
-                    Spacer()
-                    if os.wallpaper == i { Text("Selected").foregroundColor(.secondary) }
-                }
-            }
-        }
-        .navigationTitle("Wallpaper")
-    }
-}
-
-struct BatteryPage: View {
-    @EnvironmentObject var os: OSState
-    @State private var low = false
-    var body: some View {
-        List {
-            Toggle("Low Power Mode", isOn: $low)
-            Row(tile: "%", color: .green, title: "Level", value: "33%")
-            Button("Check Battery Health") {
-                os.popup("Battery Health", "Maximum capacity: 333%. Impressive.")
-            }
-        }
-        .navigationTitle("Battery")
-    }
-}
-
-struct TerminalApp: View {
-    @EnvironmentObject var os: OSState
-    @State private var input = ""
-    @State private var lines = ["TrollOS shell. Type help"]
+    @Binding var selection: Int
+    private let columns = Array(repeating: GridItem(.flexible()), count: 8)
 
     var body: some View {
         VStack(alignment: .leading) {
-            ScrollView {
-                Text(lines.joined(separator: "\n"))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            Text(title)
+            LazyVGrid(columns: columns) {
+                ForEach(palette.indices, id: \.self) { i in
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(palette[i])
+                        .frame(height: 30)
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .stroke(selection == i ? Color.cyan : Color.gray,
+                                    lineWidth: selection == i ? 3 : 1))
+                        .overlay(Text(i == palette.count - 1 ? "none" : "").font(.system(size: 9)))
+                        .contentShape(Rectangle())
+                        .onTapGesture { selection = i }
+                }
             }
+        }
+    }
+}
+
+struct SliderRow: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    var step: Double = 1
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text("\(title): \(String(format: step < 1 ? "%.2f" : "%.0f", value))")
             HStack {
-                Text("$")
-                TextField("command", text: $input)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .onSubmit(run)
-                Button("Run", action: run)
-            }
-        }
-        .font(.system(.footnote, design: .monospaced))
-        .foregroundColor(.green)
-        .padding()
-    }
-
-    private func run() {
-        let cmd = input.trimmingCharacters(in: .whitespaces).lowercased()
-        input = ""
-        if cmd.isEmpty { return }
-        if cmd == "clear" { lines = []; return }
-        if cmd == "reboot" { os.reboot(); return }
-        lines.append("$ " + cmd)
-        switch cmd {
-        case "help": lines.append("help ls whoami date ver troll neofetch reboot clear")
-        case "ls": lines.append("Bananas/  Memes/  System/  readme.txt")
-        case "whoami": lines.append(os.username)
-        case "date": lines.append(Date().formatted())
-        case "ver": lines.append("TrollOS 3.33")
-        case "troll": lines.append("u mad? :)")
-        case "neofetch": lines.append("OS: TrollOS\nKernel: banana-3.33\nRAM: 333 coconuts")
-        default: lines.append("\(cmd): not found")
-        }
-    }
-}
-
-struct FilesApp: View {
-    @EnvironmentObject var os: OSState
-    private let folders: [(String, [String])] = [
-        ("Bananas", ["ripe.txt", "green.txt"]),
-        ("Memes", ["troll.meme", "classic.meme"]),
-        ("System", ["kernel.bin", "boot.cfg"])
-    ]
-
-    var body: some View {
-        List {
-            ForEach(folders, id: \.0) { folder in
-                Section(folder.0) {
-                    ForEach(folder.1, id: \.self) { file in
-                        Button {
-                            os.popup(file, "Located in \(folder.0).")
-                        } label: {
-                            Row(tile: "F", color: .blue, title: file)
-                        }
-                    }
-                }
+                Button("-") { value = max(range.lowerBound, value - step) }
+                    .buttonStyle(.bordered)
+                Slider(value: $value, in: range)
+                Button("+") { value = min(range.upperBound, value + step) }
+                    .buttonStyle(.bordered)
             }
         }
     }
 }
 
-struct NotesApp: View {
-    @AppStorage("note") private var note = "Write something..."
-    var body: some View {
-        TextEditor(text: $note).padding()
-    }
-}
-
-struct CalcApp: View {
-    @State private var display = "0"
-    @State private var stored = 0.0
-    @State private var op = ""
-    @State private var fresh = true
-    private let keys = [["7", "8", "9", "/"], ["4", "5", "6", "x"],
-                        ["1", "2", "3", "-"], ["C", "0", "=", "+"]]
+struct InspectorView: View {
+    @ObservedObject var model: EditorModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 10) {
-            Spacer()
-            Text(display)
-                .font(.system(size: 54, weight: .light))
-                .lineLimit(1)
-                .minimumScaleFactor(0.4)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            ForEach(keys, id: \.self) { row in
-                HStack(spacing: 10) {
-                    ForEach(row, id: \.self) { key in
-                        Button { press(key) } label: {
-                            Text(key)
-                                .font(.title)
-                                .frame(maxWidth: .infinity, minHeight: 70)
-                                .background(Int(key) == nil ? Color.orange : Color(white: 0.2))
-                                .foregroundColor(.white)
-                                .clipShape(RoundedRectangle(cornerRadius: 14))
-                        }
-                    }
-                }
-            }
-        }
-        .padding()
-    }
-
-    private func press(_ key: String) {
-        if Int(key) != nil {
-            if fresh { display = key; fresh = false }
-            else if display.count < 12 { display += key }
-        } else if key == "C" {
-            display = "0"; stored = 0; op = ""; fresh = true
-        } else {
-            let current = Double(display) ?? 0
-            if !op.isEmpty && !fresh {
-                var result = current
-                if op == "+" { result = stored + current }
-                if op == "-" { result = stored - current }
-                if op == "x" { result = stored * current }
-                if op == "/" { result = current == 0 ? 0 : stored / current }
-                display = String(format: "%g", result)
-                stored = result
-            } else {
-                stored = current
-            }
-            op = key == "=" ? "" : key
-            fresh = true
-        }
-    }
-}
-
-struct ClockApp: View {
-    @State private var start: Date?
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.1)) { context in
-            VStack(spacing: 30) {
-                Text(context.date, format: .dateTime.hour().minute().second())
-                    .font(.system(size: 44, design: .monospaced))
-                Text(elapsed(context.date))
-                    .font(.system(size: 34, design: .monospaced))
-                    .foregroundColor(.orange)
-                Button(start == nil ? "Start Stopwatch" : "Reset") {
-                    start = start == nil ? Date() : nil
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-    }
-
-    private func elapsed(_ now: Date) -> String {
-        guard let start = start else { return "0.0 s" }
-        return String(format: "%.1f s", max(0, now.timeIntervalSince(start)))
-    }
-}
-
-struct StoreApp: View {
-    @EnvironmentObject var os: OSState
-    private let items = ["BananaTheme", "TrollKeyboard", "CocoWidgets", "MemePlayer", "WaveDock"]
-
-    var body: some View {
-        List(items, id: \.self) { item in
-            Button {
-                if os.installed.contains(item) {
-                    os.installed.remove(item)
-                    os.popup("Removed", "\(item) was removed.")
+        NavigationStack {
+            Group {
+                if let element = model.element {
+                    form(binding(element))
                 } else {
-                    os.installed.insert(item)
-                    os.popup("Installed", "\(item) is ready to use.")
+                    Text("Nothing selected")
                 }
-            } label: {
-                Row(tile: String(item.prefix(2)), color: .purple, title: item,
-                    value: os.installed.contains(item) ? "Remove" : "Get")
+            }
+            .navigationTitle(model.element?.kind.rawValue ?? "Design")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Done") { dismiss() } }
+        }
+    }
+
+    private func binding(_ fallback: Element) -> Binding<Element> {
+        Binding(
+            get: { model.frame.elements.first { $0.id == fallback.id } ?? fallback },
+            set: { value in model.change(fallback.id) { $0 = value } }
+        )
+    }
+
+    private func form(_ e: Binding<Element>) -> some View {
+        Form {
+            if e.wrappedValue.kind != .rect && e.wrappedValue.kind != .circle
+                && e.wrappedValue.kind != .progress {
+                Section("Text") {
+                    TextField("Text", text: e.text, axis: .vertical)
+                    SliderRow(title: "Font size", value: e.fontSize, range: 8...72)
+                    Swatches(title: "Text colour", selection: e.ink)
+                }
+            }
+            Section("Layout") {
+                SliderRow(title: "X", value: e.x, range: 0...390)
+                SliderRow(title: "Y", value: e.y, range: 0...844)
+                SliderRow(title: "Width", value: e.w, range: 10...390)
+                SliderRow(title: "Height", value: e.h, range: 4...844)
+            }
+            Section("Style") {
+                Swatches(title: "Fill", selection: e.fill)
+                SliderRow(title: "Corner radius", value: e.radius, range: 0...80)
+                SliderRow(title: "Opacity", value: e.opacity, range: 0.05...1, step: 0.05)
+            }
+            Section("Prototype: on tap") {
+                Picker("Action", selection: e.action) {
+                    ForEach(TapAction.allCases) { action in
+                        Text(action.rawValue).tag(action)
+                    }
+                }
+                if e.wrappedValue.action == .goTo || e.wrappedValue.action == .load {
+                    Picker("Destination", selection: e.target) {
+                        Text("None").tag(UUID?.none)
+                        ForEach(model.project.frames) { frame in
+                            Text(frame.name).tag(Optional(frame.id))
+                        }
+                    }
+                }
+                if e.wrappedValue.action == .popup {
+                    TextField("Popup title", text: e.popupTitle)
+                    TextField("Popup message", text: e.popupText, axis: .vertical)
+                }
             }
         }
     }
 }
 
-struct JailApp: View {
-    @EnvironmentObject var os: OSState
+struct LayersView: View {
+    @ObservedObject var model: EditorModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(Array(model.frame.elements.reversed())) { element in
+                    Button {
+                        model.selected = element.id
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Text(element.kind.rawValue)
+                            Spacer()
+                            Text(element.text.components(separatedBy: "\n").first ?? "")
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .onMove(perform: move)
+                .onDelete(perform: remove)
+            }
+            .navigationTitle("Layers")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { EditButton() }
+        }
+    }
+
+    private func move(from: IndexSet, to: Int) {
+        model.checkpoint()
+        var list = Array(model.frame.elements.reversed())
+        list.move(fromOffsets: from, toOffset: to)
+        model.frame.elements = list.reversed()
+    }
+
+    private func remove(at offsets: IndexSet) {
+        model.checkpoint()
+        var list = Array(model.frame.elements.reversed())
+        list.remove(atOffsets: offsets)
+        model.frame.elements = list.reversed()
+        model.selected = nil
+    }
+}
+
+struct ScreenView: View {
+    @ObservedObject var model: EditorModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Screen name", text: Binding(
+                    get: { model.frame.name },
+                    set: { model.frame.name = $0 }
+                ))
+                Swatches(title: "Background", selection: Binding(
+                    get: { model.frame.fill },
+                    set: { model.frame.fill = $0 }
+                ))
+                Button("Duplicate screen") { model.addFrame(copying: true); dismiss() }
+                Button("Delete screen", role: .destructive) { model.deleteFrame(); dismiss() }
+                    .disabled(model.project.frames.count < 2)
+            }
+            .navigationTitle("Screen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Done") { dismiss() } }
+        }
+    }
+}
+
+// MARK: - Prototype player
+
+struct PlayerView: View {
+    @EnvironmentObject var store: Store
+    let project: Project
+    let start: UUID?
+
+    @State private var current: UUID?
+    @State private var history: [UUID] = []
     @State private var progress = 0.0
-    @State private var running = false
+    @State private var loading: Task<Void, Never>?
+    @State private var switches: Set<UUID> = []
+    @State private var lines = 0
+    @State private var popup: Element?
+    @State private var respringing = false
+    @State private var menu = false
+    @State private var hint = true
+
+    private var frame: Frame {
+        let id = current ?? start
+        return project.frames.first { $0.id == id } ?? project.frames[0]
+    }
 
     var body: some View {
-        VStack(spacing: 24) {
-            AppTile(app: .jail, size: 100)
-            Text(os.jailbroken ? "Jailbroken" : "Not jailbroken")
-            ProgressView(value: os.jailbroken ? 1 : progress).padding(.horizontal, 40)
-            Button(running ? "Working..." : "Jailbreak") { running = true }
-                .buttonStyle(.borderedProminent)
-                .disabled(running || os.jailbroken)
+        GeometryReader { geo in
+            let scale = min(geo.size.width / canvasSize.width, geo.size.height / canvasSize.height)
+            ZStack {
+                palette[frame.fill == 15 ? 0 : frame.fill]
+                ZStack {
+                    ForEach(frame.elements) { element in
+                        playable(element)
+                    }
+                }
+                .frame(width: canvasSize.width, height: canvasSize.height)
+                .scaleEffect(scale)
+                .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                if hint {
+                    VStack {
+                        Spacer()
+                        Text("Press and hold to exit")
+                            .font(.footnote)
+                            .padding(10)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Capsule())
+                            .padding(.bottom, 30)
+                    }
+                    .allowsHitTesting(false)
+                }
+                if respringing {
+                    Color.black
+                    ProgressView().tint(.white).scaleEffect(1.6)
+                }
+            }
+            .contentShape(Rectangle())
+            .simultaneousGesture(LongPressGesture(minimumDuration: 1.2).onEnded { _ in menu = true })
         }
-        .task(id: running) {
-            guard running else { return }
-            for i in 1...20 {
-                try? await Task.sleep(nanoseconds: 200_000_000)
+        .background(Color.black)
+        .ignoresSafeArea()
+        .task(id: frame.id) { await typeLines() }
+        .task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            hint = false
+        }
+        .onDisappear { loading?.cancel() }
+        .alert(popup?.popupTitle ?? "", isPresented: Binding(
+            get: { popup != nil },
+            set: { if !$0 { popup = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(popup?.popupText ?? "")
+        }
+        .confirmationDialog("Prototype", isPresented: $menu) {
+            Button("Restart") { restart() }
+            Button("Exit prototype", role: .destructive) { store.playing = nil }
+        }
+    }
+
+    private func playable(_ element: Element) -> some View {
+        ElementView(element: element, progress: progress,
+                    isOn: switches.contains(element.id), lines: lines)
+            .contentShape(Rectangle())
+            .onTapGesture { tap(element) }
+            .position(x: element.x, y: element.y)
+    }
+
+    private func typeLines() async {
+        lines = 0
+        let counts = frame.elements.filter { $0.kind == .console }
+            .map { $0.text.components(separatedBy: "\n").count }
+        let total = counts.max() ?? 0
+        while lines < total {
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            if Task.isCancelled { return }
+            lines += 1
+        }
+    }
+
+    private func tap(_ element: Element) {
+        if element.kind == .toggle {
+            if switches.contains(element.id) { switches.remove(element.id) }
+            else { switches.insert(element.id) }
+        }
+        switch element.action {
+        case .none:
+            break
+        case .goTo:
+            if let target = element.target { go(target) }
+        case .back:
+            if let last = history.popLast() {
+                loading?.cancel()
+                progress = 0
+                current = last
+            }
+        case .popup:
+            popup = element
+        case .load:
+            load(then: element.target)
+        case .respring:
+            respring()
+        }
+    }
+
+    private func go(_ id: UUID) {
+        guard project.frames.contains(where: { $0.id == id }) else { return }
+        loading?.cancel()
+        history.append(frame.id)
+        progress = 0
+        current = id
+    }
+
+    private func load(then target: UUID?) {
+        loading?.cancel()
+        loading = Task { @MainActor in
+            for i in 0...40 {
+                progress = Double(i) / 40
+                try? await Task.sleep(nanoseconds: 100_000_000)
                 if Task.isCancelled { return }
-                progress = Double(i) / 20
             }
-            running = false
-            os.jailbroken = true
-            os.popup("Done", "Jailbreak complete.")
+            if let target = target { go(target) }
         }
     }
-}
 
-struct GameApp: View {
-    @AppStorage("best") private var best = 0
-    @State private var score = 0
-    @State private var spot = CGPoint(x: 0.5, y: 0.5)
-
-    var body: some View {
-        VStack {
-            Text("Score \(score)   Best \(best)").font(.headline).padding()
-            GeometryReader { geo in
-                Button {
-                    score += 1
-                    best = max(best, score)
-                    spot = CGPoint(x: Double.random(in: 0.15...0.85), y: Double.random(in: 0.1...0.9))
-                } label: {
-                    AppTile(app: .game, size: 70)
-                }
-                .position(x: geo.size.width * spot.x, y: geo.size.height * spot.y)
-            }
-            Button("Restart") { score = 0 }.padding()
+    private func respring() {
+        respringing = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            respringing = false
+            restart()
         }
     }
-}
 
-struct PaintApp: View {
-    @State private var cells = Array(repeating: Color(white: 0.15), count: 100)
-    @State private var brush = Color.red
-    private let colors: [Color] = [.red, .orange, .yellow, .green, .blue, .purple, .white]
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 10)
-
-    var body: some View {
-        VStack(spacing: 20) {
-            LazyVGrid(columns: columns, spacing: 2) {
-                ForEach(0..<100, id: \.self) { i in
-                    Rectangle()
-                        .fill(cells[i])
-                        .aspectRatio(1, contentMode: .fit)
-                        .onTapGesture { cells[i] = brush }
-                }
-            }
-            HStack {
-                ForEach(colors, id: \.self) { color in
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(color)
-                        .frame(width: 36, height: brush == color ? 52 : 36)
-                        .onTapGesture { brush = color }
-                }
-            }
-            Button("Clear") { cells = Array(repeating: Color(white: 0.15), count: 100) }
-        }
-        .padding()
-    }
-}
-
-struct BrowserApp: View {
-    @State private var address = "troll://home"
-    @State private var page = "troll://home"
-
-    var body: some View {
-        VStack(spacing: 20) {
-            HStack {
-                TextField("Address", text: $address)
-                    .textFieldStyle(.roundedBorder)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .onSubmit { page = address }
-                Button("Go") { page = address }
-            }
-            Text("TrollNet").font(.largeTitle).bold()
-            Text(page == "troll://home" ? "Welcome to TrollNet."
-                 : "404: \(page) was eaten by a troll.")
-                .multilineTextAlignment(.center)
-            Button("Home Page") { address = "troll://home"; page = address }
-            Spacer()
-        }
-        .padding()
-    }
-}
-
-struct AboutApp: View {
-    @EnvironmentObject var os: OSState
-    var body: some View {
-        List {
-            Row(tile: "OS", color: .teal, title: "System", value: "TrollOS 3.33")
-            Row(tile: "US", color: .blue, title: "User", value: os.username)
-            Row(tile: "PK", color: .purple, title: "Packages", value: "\(os.installed.count)")
-            Row(tile: "ME", color: .orange, title: "Made by", value: "You")
-            Section("Legal") {
-                Text("TrollOS is a simulation made for fun. It does not change your device.")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-            }
-        }
+    private func restart() {
+        loading?.cancel()
+        history = []
+        switches = []
+        progress = 0
+        current = project.frames.first?.id
     }
 }
