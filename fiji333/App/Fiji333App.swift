@@ -309,6 +309,12 @@ struct Element: Codable, Identifiable, Equatable {
     var value: Double = 0.5
     var showValue = true
     var tabTargets: [UUID?] = []
+    var extra: [Int]?
+    var angle: Double = 0
+    var radial = false
+
+    // Gradient colours after the main fill. Older designs only stored fill2.
+    var moreColors: [Int] { extra ?? fill2.map { [$0] } ?? [] }
 
     var label: String { name.isEmpty ? kind.rawValue : name }
 
@@ -318,6 +324,7 @@ struct Element: Codable, Identifiable, Equatable {
         case image, imageFit, motion, motionEasing, motionTime, motionDelay, interactions
         case consoleSpeed, consoleWait, consoleLoop, consoleScroll
         case value, showValue, tabTargets
+        case extra, angle, radial
     }
 }
 
@@ -369,6 +376,9 @@ extension Element {
         value = read(.value, value)
         showValue = read(.showValue, showValue)
         tabTargets = read(.tabTargets, tabTargets)
+        extra = try? c.decode([Int].self, forKey: .extra)
+        angle = read(.angle, angle)
+        radial = read(.radial, radial)
 
         if !c.contains(.interactions) {
             let old = try decoder.container(keyedBy: OldKeys.self)
@@ -389,6 +399,9 @@ struct Frame: Codable, Identifiable, Equatable {
     var name: String
     var fill = 0
     var elements: [Element] = []
+    var extra: [Int]?
+    var angle: Double?
+    var radial: Bool?
 }
 
 struct Project: Codable, Identifiable, Equatable {
@@ -785,11 +798,104 @@ struct HomeView: View {
     }
 }
 
+func makePaint(_ colors: [Int], angle: Double, radial: Bool, reach: Double) -> AnyShapeStyle {
+    var list = colors.map { swatch($0) }
+    if list.count == 1 { list.append(list[0]) }
+    let gradient = Gradient(colors: list)
+    if radial {
+        return AnyShapeStyle(RadialGradient(gradient: gradient, center: .center,
+                                            startRadius: 0, endRadius: max(1, reach)))
+    }
+    // 0 degrees runs from top to bottom.
+    let turn = angle * Double.pi / 180
+    let dx = sin(turn) * 0.5
+    let dy = cos(turn) * 0.5
+    return AnyShapeStyle(LinearGradient(gradient: gradient,
+                                        startPoint: UnitPoint(x: 0.5 - dx, y: 0.5 - dy),
+                                        endPoint: UnitPoint(x: 0.5 + dx, y: 0.5 + dy)))
+}
+
+struct Backdrop: View {
+    let screen: Frame
+
+    private var colors: [Int] {
+        let all = [screen.fill] + (screen.extra ?? [])
+        return all == [noColor] ? [0] : all
+    }
+
+    var body: some View {
+        Rectangle()
+            .fill(makePaint(colors, angle: screen.angle ?? 0,
+                            radial: screen.radial ?? false, reach: 500))
+    }
+}
+
+struct GradientEditor: View {
+    @Binding var fill: Int
+    @Binding var extra: [Int]
+    @Binding var angle: Double
+    @Binding var radial: Bool
+
+    private let presets: [(String, [Int])] = [
+        ("Sunset", [12, 13, 6]), ("Ocean", [24, 10, 23]), ("Neon", [26, 12, 23]),
+        ("Matrix", [0, 21, 8]), ("Fire", [17, 5, 6, 7]), ("Rainbow", [5, 6, 7, 8, 10, 12])
+    ]
+
+    var body: some View {
+        Group {
+            Rectangle()
+                .fill(makePaint([fill] + extra, angle: angle, radial: radial, reach: 180))
+                .frame(height: 60)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            Swatches(title: extra.isEmpty ? "Colour" : "Colour 1", selection: $fill)
+            ForEach(extra.indices, id: \.self) { i in
+                VStack(alignment: .leading) {
+                    Swatches(title: "Colour \(i + 2)", selection: color(i))
+                    Button("Remove colour \(i + 2)", role: .destructive) { remove(i) }
+                        .buttonStyle(.borderless)
+                }
+            }
+            Button("+ Add gradient colour") {
+                extra.append(extra.count % 2 == 0 ? 12 : 10)
+            }
+            Menu("Gradient presets") {
+                ForEach(presets, id: \.0) { preset in
+                    Button(preset.0) { use(preset.1) }
+                }
+            }
+            if !extra.isEmpty {
+                Button("Reverse colours") { use(([fill] + extra).reversed()) }
+                Toggle("Circular gradient", isOn: $radial)
+                if !radial {
+                    SliderRow(title: "Angle", value: $angle, range: 0...360, step: 15)
+                }
+            }
+        }
+    }
+
+    private func color(_ index: Int) -> Binding<Int> {
+        Binding(
+            get: { extra.indices.contains(index) ? extra[index] : fill },
+            set: { if extra.indices.contains(index) { extra[index] = $0 } }
+        )
+    }
+
+    private func remove(_ index: Int) {
+        if extra.indices.contains(index) { extra.remove(at: index) }
+    }
+
+    private func use(_ colors: [Int]) {
+        guard let first = colors.first else { return }
+        fill = first
+        extra = Array(colors.dropFirst())
+    }
+}
+
 struct ScreenPicture: View {
     let frame: Frame
     var body: some View {
         ZStack {
-            swatch(frame.fill)
+            Backdrop(screen: frame)
             ForEach(frame.elements.filter { !$0.hidden }) { element in
                 ElementView(element: element)
                     .position(x: element.x, y: element.y)
@@ -1090,10 +1196,9 @@ struct ElementView: View {
         RoundedRectangle(cornerRadius: element.radius, style: .continuous)
     }
 
-    private var paint: LinearGradient {
-        let first = swatch(element.fill)
-        let second = element.fill2.map { swatch($0) } ?? first
-        return LinearGradient(colors: [first, second], startPoint: .top, endPoint: .bottom)
+    private var paint: AnyShapeStyle {
+        makePaint([element.fill] + element.moreColors, angle: element.angle,
+                  radial: element.radial, reach: max(element.w, element.h) * 0.7)
     }
 
     private var font: Font {
@@ -1750,7 +1855,7 @@ struct CanvasView: View {
 
     private var board: some View {
         ZStack {
-            swatch(model.frame.fill)
+            Backdrop(screen: model.frame)
                 .onTapGesture { model.selected = nil }
             ForEach(model.frame.elements) { element in
                 item(element)
@@ -2062,17 +2167,20 @@ struct InspectorView: View {
 
     private func styleSection(_ e: Binding<Element>) -> some View {
         Section("Style") {
-            Swatches(title: "Fill", selection: e.fill)
-            Toggle("Gradient", isOn: Binding(
-                get: { e.wrappedValue.fill2 != nil },
-                set: { e.wrappedValue.fill2 = $0 ? 12 : nil }
-            ))
-            if e.wrappedValue.fill2 != nil {
-                Swatches(title: "Gradient end", selection: Binding(
-                    get: { e.wrappedValue.fill2 ?? 12 },
-                    set: { e.wrappedValue.fill2 = $0 }
-                ))
-            }
+            GradientEditor(
+                fill: e.fill,
+                extra: Binding(
+                    get: { e.wrappedValue.moreColors },
+                    set: { colors in
+                        var value = e.wrappedValue
+                        value.extra = colors
+                        value.fill2 = nil
+                        e.wrappedValue = value
+                    }
+                ),
+                angle: e.angle,
+                radial: e.radial
+            )
             SliderRow(title: "Corner radius", value: e.radius, range: 0...200,
                       unlocked: 0...2000)
             SliderRow(title: "Opacity", value: e.opacity, range: 0.05...1, step: 0.05)
@@ -2449,10 +2557,26 @@ struct ScreenView: View {
                     get: { model.frame.name },
                     set: { model.frame.name = $0 }
                 ))
-                Swatches(title: "Background", selection: Binding(
-                    get: { model.frame.fill },
-                    set: { model.frame.fill = $0 }
-                ))
+                Section("Background") {
+                    GradientEditor(
+                        fill: Binding(
+                            get: { model.frame.fill },
+                            set: { model.frame.fill = $0 }
+                        ),
+                        extra: Binding(
+                            get: { model.frame.extra ?? [] },
+                            set: { model.frame.extra = $0 }
+                        ),
+                        angle: Binding(
+                            get: { model.frame.angle ?? 0 },
+                            set: { model.frame.angle = $0 }
+                        ),
+                        radial: Binding(
+                            get: { model.frame.radial ?? false },
+                            set: { model.frame.radial = $0 }
+                        )
+                    )
+                }
                 Button("Duplicate screen") { model.addFrame(copying: true); dismiss() }
                 Button("Delete screen", role: .destructive) { model.deleteFrame(); dismiss() }
                     .disabled(model.project.frames.count < 2)
@@ -2658,7 +2782,7 @@ struct PlayerView: View {
         GeometryReader { geo in
             let scale = min(geo.size.width / canvasSize.width, geo.size.height / canvasSize.height)
             ZStack {
-                swatch(frame.fill == noColor ? 0 : frame.fill)
+                Backdrop(screen: frame)
                 ZStack {
                     screenLayer(frame)
                         .id(layer)
@@ -2771,7 +2895,7 @@ struct PlayerView: View {
 
     private func screenLayer(_ screen: Frame) -> some View {
         ZStack {
-            swatch(screen.fill == noColor ? 0 : screen.fill)
+            Backdrop(screen: screen)
             ForEach(screen.elements, id: \.link) { element in
                 playable(element)
             }
@@ -2812,6 +2936,7 @@ struct PlayerView: View {
         if let color = colors[element.id] {
             copy.fill = color
             copy.fill2 = nil
+            copy.extra = nil
         }
         if let ink = inks[element.id] { copy.ink = ink }
         if let text = texts[element.id] { copy.text = text }
