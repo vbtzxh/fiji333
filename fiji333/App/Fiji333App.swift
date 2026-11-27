@@ -169,11 +169,26 @@ enum PopupPlace: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum PopupStyle: String, Codable, CaseIterable, Identifiable {
+    case alert = "iOS alert"
+    case sheet = "iOS action sheet"
+    case custom = "Custom colours"
+    var id: String { rawValue }
+}
+
+enum PopupRole: String, Codable, CaseIterable, Identifiable {
+    case normal = "Normal"
+    case cancel = "Cancel (bold)"
+    case destructive = "Destructive (red)"
+    var id: String { rawValue }
+}
+
 struct PopupButton: Codable, Identifiable, Equatable {
     var id = UUID()
     var title = "OK"
     var fill = 10
     var ink = 4
+    var role: PopupRole?
     // Holds one follow-up action. Empty means the popup just closes.
     var then: [Interaction] = []
 }
@@ -201,13 +216,14 @@ struct Interaction: Codable, Identifiable, Equatable {
     var color = 8
     var colorText = false
     var newText = "Done"
+    var style: PopupStyle = .alert
     // What happens after a respring. Empty means restart the prototype.
     var then: [Interaction] = []
 
     enum CodingKeys: String, CodingKey {
         case id, trigger, action, wait, screen, layer, title, message, transition, easing, duration
         case buttons, popupFill, popupInk, popupRadius, popupDim, popupPlace, popupStack
-        case autoClose, color, colorText, newText, then
+        case autoClose, color, colorText, newText, then, style
     }
 
     // Points follow-up actions at the new layers when a screen is duplicated.
@@ -251,6 +267,7 @@ extension Interaction {
         colorText = read(.colorText, colorText)
         newText = read(.newText, newText)
         then = read(.then, then)
+        style = read(.style, style)
     }
 }
 
@@ -2216,6 +2233,15 @@ struct PopupPage: View {
 
     var body: some View {
         Form {
+            Section("Type") {
+                Picker("Popup type", selection: $item.style) {
+                    ForEach(PopupStyle.allCases) { Text($0.rawValue).tag($0) }
+                }
+                if item.style != .custom {
+                    Text("Uses the real system popup, so iOS decides the colours and layout.")
+                        .font(.caption)
+                }
+            }
             Section("Message") {
                 TextField("Popup title", text: $item.title)
                 TextField("Popup message", text: $item.message, axis: .vertical)
@@ -2228,8 +2254,17 @@ struct PopupPage: View {
                                    item: followUp($button.then, fallback: .none),
                                    title: button.title)
                     }
-                    Swatches(title: "Button colour", selection: $button.fill)
-                    Swatches(title: "Button text colour", selection: $button.ink)
+                    if item.style == .custom {
+                        Swatches(title: "Button colour", selection: $button.fill)
+                        Swatches(title: "Button text colour", selection: $button.ink)
+                    } else {
+                        Picker("Button style", selection: Binding(
+                            get: { button.role ?? .normal },
+                            set: { button.role = $0 }
+                        )) {
+                            ForEach(PopupRole.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                    }
                     Button("Remove button", role: .destructive) {
                         let id = button.id
                         item.buttons.removeAll { $0.id == id }
@@ -2246,14 +2281,29 @@ struct PopupPage: View {
                     var cancel = PopupButton()
                     cancel.title = "Cancel"
                     cancel.fill = 2
+                    cancel.role = .cancel
                     item.buttons = [cancel, PopupButton()]
                 }
-                Toggle("Stack buttons vertically", isOn: $item.popupStack)
-                if item.buttons.isEmpty {
-                    Text("With no buttons, tapping outside closes the popup.")
-                        .font(.caption)
+                if item.style == .custom {
+                    Toggle("Stack buttons vertically", isOn: $item.popupStack)
+                    if item.buttons.isEmpty {
+                        Text("With no buttons, tapping outside closes the popup.")
+                            .font(.caption)
+                    }
                 }
             }
+            Section("Timing") {
+                SliderRow(title: "Close by itself after (s, 0 is off)", value: $item.autoClose,
+                          range: 0...20, unlocked: 0...600)
+            }
+            if item.style == .custom {
+                lookSection
+            }
+        }
+        .navigationTitle("Popup")
+    }
+
+    private var lookSection: some View {
             Section("Look") {
                 Picker("Position", selection: $item.popupPlace) {
                     ForEach(PopupPlace.allCases) { Text($0.rawValue).tag($0) }
@@ -2264,11 +2314,7 @@ struct PopupPage: View {
                 SliderRow(title: "Corner radius", value: $item.popupRadius, range: 0...50,
                           unlocked: 0...200)
                 SliderRow(title: "Darken behind", value: $item.popupDim, range: 0...1, step: 0.05)
-                SliderRow(title: "Close by itself after (s, 0 is off)", value: $item.autoClose,
-                          range: 0...20, unlocked: 0...600)
             }
-        }
-        .navigationTitle("Popup")
     }
 }
 
@@ -2625,7 +2671,7 @@ struct PlayerView: View {
                 .blur(radius: receding ? 24 : 0)
                 .scaleEffect(receding ? 0.88 : 1)
                 if hint && showHint { hintView }
-                if let item = popup {
+                if let item = popup, item.style == .custom {
                     PopupOverlay(item: item, choose: choose)
                         .id(popupVisit)
                         .transition(.opacity.combined(with: .scale(scale: 1.05)))
@@ -2647,6 +2693,10 @@ struct PlayerView: View {
             cancelAll()
             respringTask?.cancel()
         }
+        .background(alertHost)
+        .overlay(sheetHost.allowsHitTesting(false))
+        .task(id: popupVisit) { await autoCloseSystemPopup() }
+        .tint(Color(uiColor: .systemBlue))
         .confirmationDialog("Prototype", isPresented: $menu) {
             Button("Restart") {
                 respringTask?.cancel()
@@ -2655,6 +2705,55 @@ struct PlayerView: View {
             }
             Button("Exit prototype", role: .destructive) { store.playing = nil }
         }
+    }
+
+    private func showing(_ style: PopupStyle) -> Binding<Bool> {
+        Binding(
+            get: { popup?.style == style },
+            set: { open in
+                if !open && popup?.style == style { popup = nil }
+            }
+        )
+    }
+
+    private var alertHost: some View {
+        Color.clear
+            .alert(popup?.title ?? "", isPresented: showing(.alert), presenting: popup) { item in
+                systemButtons(item)
+            } message: { item in
+                Text(item.message)
+            }
+    }
+
+    private var sheetHost: some View {
+        Color.clear
+            .confirmationDialog(popup?.title ?? "", isPresented: showing(.sheet),
+                                titleVisibility: .visible, presenting: popup) { item in
+                systemButtons(item)
+            } message: { item in
+                Text(item.message)
+            }
+    }
+
+    private func systemButtons(_ item: Interaction) -> some View {
+        // iOS allows only one cancel button.
+        let cancel = item.buttons.first { $0.role == .cancel }?.id
+        return ForEach(item.buttons) { button in
+            Button(button.title, role: role(button, cancel: cancel)) {
+                choose(button)
+            }
+        }
+    }
+
+    private func role(_ button: PopupButton, cancel: UUID?) -> ButtonRole? {
+        if button.id == cancel { return .cancel }
+        return button.role == .destructive ? .destructive : nil
+    }
+
+    private func autoCloseSystemPopup() async {
+        guard let item = popup, item.style != .custom, item.autoClose > 0 else { return }
+        try? await Task.sleep(nanoseconds: UInt64(item.autoClose * 1_000_000_000))
+        if !Task.isCancelled { popup = nil }
     }
 
     private var hintView: some View {
@@ -2782,7 +2881,7 @@ struct PlayerView: View {
     private func choose(_ button: PopupButton?) {
         withAnimation(.easeOut(duration: 0.2)) { popup = nil }
         if let next = button?.then.first {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
                 if store.playing != nil { run(next) }
             }
         }
