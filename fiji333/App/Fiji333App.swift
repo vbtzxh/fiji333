@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import PhotosUI
 import UniformTypeIdentifiers
+import AudioToolbox
 
 // Fiji Studio: design and play your own jailbreak-style prototypes.
 
@@ -49,6 +50,9 @@ enum Kind: String, Codable, CaseIterable, Identifiable {
     case image = "Image"
     case slider = "Slider"
     case tabs = "Tab Bar"
+    case clock = "Live Clock"
+    case spinner = "Spinner"
+    case ring = "Progress Ring"
     var id: String { rawValue }
 }
 
@@ -80,6 +84,11 @@ enum TapAction: String, Codable, CaseIterable, Identifiable {
     case restart = "Restart prototype"
     case recolor = "Change layer colour"
     case setText = "Change layer text"
+    case shake = "Shake screen"
+    case flash = "Flash screen"
+    case burst = "Confetti burst"
+    case particles = "Start / stop particles"
+    case sound = "Play sound"
     var id: String { rawValue }
 
     var needsScreen: Bool { self == .goTo || self == .load }
@@ -162,6 +171,112 @@ enum MotionKind: String, Codable, CaseIterable, Identifiable {
     var loops: Bool { self == .spin || self == .pulse || self == .blink || self == .float }
 }
 
+enum EffectKind: String, Codable, CaseIterable, Identifiable {
+    case none = "None"
+    case rainbow = "Rainbow colours"
+    case rainbowBorder = "Rainbow border"
+    case rainbowGlow = "Rainbow glow"
+    case hue = "Colour cycle"
+    case glow = "Pulsing glow"
+    case shimmer = "Shimmer"
+    case glitch = "Glitch"
+    case wobble = "Wobble"
+    case breathe = "Breathe"
+    case flicker = "Flicker"
+    var id: String { rawValue }
+}
+
+enum SoundKind: Int, Codable, CaseIterable, Identifiable {
+    case click = 1104
+    case tink = 1057
+    case chime = 1025
+    case tweet = 1016
+    case alert = 1005
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .click: return "Click"
+        case .tink: return "Tink"
+        case .chime: return "Chime"
+        case .tweet: return "Tweet"
+        case .alert: return "Alert"
+        }
+    }
+}
+
+enum ParticleShape: String, Codable, CaseIterable, Identifiable {
+    case circle = "Circle"
+    case square = "Square"
+    case streak = "Streak"
+    case star = "Star"
+    case ring = "Bubble"
+    case text = "Text or emoji"
+    case image = "Your image"
+    var id: String { rawValue }
+}
+
+struct Particles: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name = "Custom"
+    var shape: ParticleShape = .circle
+    var symbol = "*"
+    var image: Data?
+    var colors: [Int] = [4]
+    var rainbow = false
+    var count: Double = 60
+    var minSize: Double = 4
+    var maxSize: Double = 10
+    var speed: Double = 80
+    var direction: Double = 0
+    var wobble: Double = 10
+    var spin: Double = 0
+    var opacity: Double = 0.9
+    var twinkle = false
+    var front = true
+
+    static let presetNames = ["Snow", "Rain", "Confetti", "Stars", "Matrix", "Bubbles",
+                              "Embers", "Hearts", "Leaves", "Rainbow dust", "Custom"]
+
+    static func preset(_ name: String) -> Particles {
+        var p = Particles()
+        p.name = name
+        switch name {
+        case "Snow":
+            p.count = 90; p.speed = 50; p.wobble = 25
+        case "Rain":
+            p.shape = .streak; p.colors = [23]; p.count = 120; p.speed = 600
+            p.wobble = 0; p.minSize = 10; p.maxSize = 24; p.direction = 8; p.opacity = 0.6
+        case "Confetti":
+            p.shape = .square; p.colors = [5, 7, 8, 10, 12, 13]; p.speed = 130
+            p.spin = 180; p.minSize = 6; p.maxSize = 12
+        case "Stars":
+            p.shape = .star; p.colors = [4, 7]; p.speed = 4; p.twinkle = true
+            p.front = false; p.minSize = 3; p.maxSize = 9
+        case "Matrix":
+            p.shape = .text; p.symbol = "01"; p.colors = [8, 21]; p.speed = 220
+            p.wobble = 0; p.minSize = 12; p.maxSize = 20; p.front = false
+        case "Bubbles":
+            p.shape = .ring; p.colors = [23, 4]; p.direction = 180; p.speed = 60
+            p.count = 35; p.minSize = 8; p.maxSize = 30
+        case "Embers":
+            p.colors = [5, 6, 7]; p.direction = 180; p.speed = 90; p.wobble = 20
+            p.twinkle = true; p.minSize = 2; p.maxSize = 6
+        case "Hearts":
+            p.shape = .text; p.symbol = "\u{2665}"; p.colors = [5, 13]; p.direction = 180
+            p.count = 30; p.minSize = 14; p.maxSize = 34
+        case "Leaves":
+            p.shape = .square; p.colors = [6, 14, 17]; p.count = 30; p.spin = 90
+            p.wobble = 45; p.direction = 25; p.minSize = 8; p.maxSize = 16
+        case "Rainbow dust":
+            p.rainbow = true; p.speed = 35; p.wobble = 30; p.twinkle = true
+            p.minSize = 3; p.maxSize = 8; p.count = 110
+        default:
+            break
+        }
+        return p
+    }
+}
+
 enum PopupPlace: String, Codable, CaseIterable, Identifiable {
     case top = "Top"
     case middle = "Middle"
@@ -217,13 +332,14 @@ struct Interaction: Codable, Identifiable, Equatable {
     var colorText = false
     var newText = "Done"
     var style: PopupStyle = .alert
+    var sound: SoundKind = .chime
     // What happens after a respring. Empty means restart the prototype.
     var then: [Interaction] = []
 
     enum CodingKeys: String, CodingKey {
         case id, trigger, action, wait, screen, layer, title, message, transition, easing, duration
         case buttons, popupFill, popupInk, popupRadius, popupDim, popupPlace, popupStack
-        case autoClose, color, colorText, newText, then, style
+        case autoClose, color, colorText, newText, then, style, sound
     }
 
     // Points follow-up actions at the new layers when a screen is duplicated.
@@ -268,6 +384,7 @@ extension Interaction {
         newText = read(.newText, newText)
         then = read(.then, then)
         style = read(.style, style)
+        sound = read(.sound, sound)
     }
 }
 
@@ -312,6 +429,8 @@ struct Element: Codable, Identifiable, Equatable {
     var extra: [Int]?
     var angle: Double = 0
     var radial = false
+    var effect: EffectKind = .none
+    var effectSpeed: Double = 1
 
     // Gradient colours after the main fill. Older designs only stored fill2.
     var moreColors: [Int] { extra ?? fill2.map { [$0] } ?? [] }
@@ -324,7 +443,7 @@ struct Element: Codable, Identifiable, Equatable {
         case image, imageFit, motion, motionEasing, motionTime, motionDelay, interactions
         case consoleSpeed, consoleWait, consoleLoop, consoleScroll
         case value, showValue, tabTargets
-        case extra, angle, radial
+        case extra, angle, radial, effect, effectSpeed
     }
 }
 
@@ -379,6 +498,8 @@ extension Element {
         extra = try? c.decode([Int].self, forKey: .extra)
         angle = read(.angle, angle)
         radial = read(.radial, radial)
+        effect = read(.effect, effect)
+        effectSpeed = read(.effectSpeed, effectSpeed)
 
         if !c.contains(.interactions) {
             let old = try decoder.container(keyedBy: OldKeys.self)
@@ -402,6 +523,9 @@ struct Frame: Codable, Identifiable, Equatable {
     var extra: [Int]?
     var angle: Double?
     var radial: Bool?
+    var particles: [Particles]?
+    var rainbow: Bool?
+    var rainbowSpeed: Double?
 }
 
 struct Project: Codable, Identifiable, Equatable {
@@ -421,6 +545,9 @@ func makeElement(_ kind: Kind) -> Element {
     case .toggle: e.text = "Enable tweaks"; e.w = 350; e.h = 52; e.fill = 1
     case .progress: e.w = 300; e.h = 10; e.fill = 8
     case .image: e.w = 250; e.h = 250; e.fill = 2
+    case .clock: e.w = 340; e.h = 100; e.fill = noColor; e.fontSize = 72; e.y = 180
+    case .spinner: e.w = 80; e.h = 80; e.fill = 10
+    case .ring: e.w = 160; e.h = 160; e.fill = 8; e.fontSize = 28
     case .slider: e.w = 300; e.h = 60; e.fill = 10; e.fontSize = 15
     case .tabs:
         e.text = "Home\nTweaks\nSettings"
@@ -472,6 +599,24 @@ enum Templates {
         done.elements = [ok, log, row, spring, back]
 
         return Project(name: "Jailbreak Starter", frames: [home, done])
+    }
+
+    static func party() -> Project {
+        var screen = Frame(name: "Party")
+        screen.fill = 29
+        screen.extra = [25]
+        screen.particles = [Particles.preset("Stars"), Particles.preset("Snow")]
+        var title = makeElement(.text)
+        title.text = "fiji333"; title.y = 250; title.w = 360; title.fontSize = 64
+        title.effect = .rainbow
+        var ring = makeElement(.spinner)
+        ring.y = 420
+        var button = makeElement(.button)
+        button.text = "Party"; button.y = 640; button.w = 260
+        button.effect = .rainbowBorder
+        button.interactions = [Interaction(action: .burst)]
+        screen.elements = [title, ring, button]
+        return Project(name: "Rainbow Party", frames: [screen])
     }
 
     static func terminal() -> Project {
@@ -655,6 +800,7 @@ struct HomeView: View {
                     Button("Blank design") { create(Templates.blank()) }
                     Button("Template: Jailbreak Starter") { create(Templates.jailbreak()) }
                     Button("Template: Hacker Console") { create(Templates.terminal()) }
+                    Button("Template: Rainbow Party") { create(Templates.party()) }
                     Button("Open from Files") { importing = true }
                     Button("Import from clipboard") { importProject() }
                 }
@@ -824,8 +970,22 @@ struct Backdrop: View {
     }
 
     var body: some View {
-        Rectangle()
-            .fill(makePaint(colors, angle: screen.angle ?? 0,
+        if screen.rainbow ?? false {
+            TimelineView(.animation) { context in
+                let speed = screen.rainbowSpeed ?? 1
+                let t = context.date.timeIntervalSinceReferenceDate * speed
+                base.hueRotation(.degrees(t.truncatingRemainder(dividingBy: 8) * 45))
+            }
+        } else {
+            base
+        }
+    }
+
+    // A rainbow needs a colourful base for the hue to move.
+    private var base: some View {
+        let list = (screen.rainbow ?? false) && colors.count == 1 ? [5, 12, 10] : colors
+        return Rectangle()
+            .fill(makePaint(list, angle: screen.angle ?? 0,
                             radial: screen.radial ?? false, reach: 500))
     }
 }
@@ -888,6 +1048,223 @@ struct GradientEditor: View {
         guard let first = colors.first else { return }
         fill = first
         extra = Array(colors.dropFirst())
+    }
+}
+
+// MARK: - Effects
+
+let rainbowColors: [Color] = [.red, .orange, .yellow, .green, .cyan, .blue, .purple, .red]
+
+struct Effects: ViewModifier {
+    let element: Element
+    var active = true
+
+    func body(content: Content) -> some View {
+        if element.effect == .none || !active {
+            content
+        } else {
+            TimelineView(.animation) { context in
+                apply(content, context.date.timeIntervalSinceReferenceDate * element.effectSpeed)
+            }
+        }
+    }
+
+    private var corner: RoundedRectangle {
+        RoundedRectangle(cornerRadius: element.radius, style: .continuous)
+    }
+
+    @ViewBuilder private func apply(_ content: Content, _ t: Double) -> some View {
+        let cycle = t.truncatingRemainder(dividingBy: 4) / 4
+        let wave = (sin(t * 3) + 1) / 2
+        switch element.effect {
+        case .none:
+            content
+        case .rainbow:
+            content.overlay(
+                AngularGradient(colors: rainbowColors, center: .center,
+                                angle: .degrees(cycle * 360))
+                    .mask(content)
+                    .allowsHitTesting(false)
+            )
+        case .rainbowBorder:
+            content.overlay(
+                corner.stroke(AngularGradient(colors: rainbowColors, center: .center,
+                                              angle: .degrees(cycle * 360)), lineWidth: 5)
+                    .frame(width: element.w, height: element.h)
+                    .rotationEffect(.degrees(element.rotation))
+                    .allowsHitTesting(false)
+            )
+        case .rainbowGlow:
+            content.shadow(color: Color(hue: cycle, saturation: 1, brightness: 1), radius: 22)
+        case .hue:
+            content.hueRotation(.degrees(cycle * 360))
+        case .glow:
+            content.shadow(color: Color.white.opacity(wave), radius: 6 + 20 * wave)
+        case .shimmer:
+            content.overlay(
+                LinearGradient(colors: [.clear, Color.white.opacity(0.8), .clear],
+                               startPoint: UnitPoint(x: cycle * 3 - 1, y: 0),
+                               endPoint: UnitPoint(x: cycle * 3, y: 1))
+                    .mask(content)
+                    .allowsHitTesting(false)
+            )
+        case .glitch:
+            let jump = sin(t * 13) > 0.7
+            content
+                .offset(x: jump ? sin(t * 97) * 10 : 0)
+                .hueRotation(.degrees(jump ? 120 : 0))
+        case .wobble:
+            content.rotationEffect(.degrees(sin(t * 4) * 5))
+        case .breathe:
+            content.scaleEffect(0.95 + 0.1 * wave)
+        case .flicker:
+            content.opacity(sin(t * 23) * sin(t * 7) > 0.3 ? 0.25 : 1)
+        }
+    }
+}
+
+// A repeatable pseudo random number from 0 to 1.
+func noise(_ index: Int, _ salt: Int) -> Double {
+    let value = sin(Double(index) * 12.9898 + Double(salt) * 78.233) * 43758.5453
+    return value - value.rounded(.down)
+}
+
+func wrap(_ value: Double, _ length: Double) -> Double {
+    let rest = value.truncatingRemainder(dividingBy: length)
+    return rest < 0 ? rest + length : rest
+}
+
+func starPath(_ size: Double) -> Path {
+    var path = Path()
+    for i in 0..<10 {
+        let reach = i % 2 == 0 ? size / 2 : size / 4.5
+        let turn = Double(i) * Double.pi / 5
+        let point = CGPoint(x: sin(turn) * reach, y: -cos(turn) * reach)
+        if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
+    }
+    path.closeSubpath()
+    return path
+}
+
+struct ParticleField: View {
+    let systems: [Particles]
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { context, size in
+                let time = timeline.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 100_000)
+                for system in systems {
+                    draw(system, in: context, size: size, time: time)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func draw(_ p: Particles, in context: GraphicsContext, size: CGSize, time: Double) {
+        let total = min(1500, max(0, Int(p.count)))
+        let margin = max(p.minSize, p.maxSize) + abs(p.wobble)
+        let width = Double(size.width) + margin * 2
+        let height = Double(size.height) + margin * 2
+        let turn = p.direction * Double.pi / 180
+        let picture = p.image.flatMap { cachedImage($0) }
+
+        for i in 0..<total {
+            let pace = p.speed * (0.6 + 0.8 * noise(i, 3))
+            let sway = sin(time * 2 + noise(i, 4) * 6.28) * p.wobble
+            let x = wrap(noise(i, 1) * width - sin(turn) * pace * time, width) - margin + sway
+            let y = wrap(noise(i, 2) * height + cos(turn) * pace * time, height) - margin
+            let low = min(p.minSize, p.maxSize)
+            let side = max(1, low + noise(i, 5) * abs(p.maxSize - p.minSize))
+
+            let color: Color
+            if p.rainbow || p.colors.isEmpty {
+                color = Color(hue: wrap(noise(i, 6) + time * 0.15, 1),
+                              saturation: 0.85, brightness: 1)
+            } else {
+                color = swatch(p.colors[i % p.colors.count])
+            }
+
+            var layer = context
+            let shine = p.twinkle ? (sin(time * 3 + noise(i, 7) * 6.28) + 1) / 2 : 1
+            layer.opacity = p.opacity * shine
+            layer.translateBy(x: x, y: y)
+            let scatter: Double = p.spin == 0 ? 0 : noise(i, 9) * 360
+            var angle: Double = p.spin * time * (noise(i, 8) * 2 - 1) + scatter
+            if p.shape == .streak { angle = p.direction }
+            layer.rotate(by: .degrees(angle))
+
+            let box = CGRect(x: -side / 2, y: -side / 2, width: side, height: side)
+            switch p.shape {
+            case .circle:
+                layer.fill(Path(ellipseIn: box), with: .color(color))
+            case .square:
+                layer.fill(Path(CGRect(x: -side / 2, y: -side / 3, width: side, height: side / 1.5)),
+                           with: .color(color))
+            case .streak:
+                layer.fill(Path(CGRect(x: -1, y: -side / 2, width: 2, height: side)),
+                           with: .color(color))
+            case .star:
+                layer.fill(starPath(side), with: .color(color))
+            case .ring:
+                layer.stroke(Path(ellipseIn: box), with: .color(color), lineWidth: 1.5)
+            case .text:
+                let letters = Array(p.symbol)
+                if !letters.isEmpty {
+                    let letter = String(letters[i % letters.count])
+                    layer.draw(Text(letter).font(.system(size: side, weight: .bold, design: .monospaced))
+                        .foregroundColor(color), at: .zero)
+                }
+            case .image:
+                if let picture = picture {
+                    layer.draw(Image(uiImage: picture), in: box)
+                }
+            }
+        }
+    }
+}
+
+struct Burst: View {
+    let start: Date
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { context, size in
+                let t = timeline.date.timeIntervalSince(start)
+                guard t < 3 else { return }
+                for i in 0..<160 {
+                    let turn = noise(i, 1) * 2 * Double.pi
+                    let power = 80 + noise(i, 2) * 320
+                    var layer = context
+                    layer.opacity = max(0, 1 - t / 3)
+                    let across: Double = Double(size.width) / 2 + cos(turn) * power * t
+                    let fall: Double = 260 * t * t - 180 * t
+                    let down: Double = Double(size.height) / 2 + sin(turn) * power * t + fall
+                    layer.translateBy(x: across, y: down)
+                    layer.rotate(by: .degrees(t * 500 * noise(i, 3)))
+                    layer.fill(Path(CGRect(x: -5, y: -3, width: 10, height: 6)),
+                               with: .color(Color(hue: noise(i, 4), saturation: 0.9, brightness: 1)))
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+struct SpinnerLook: View {
+    let paint: AnyShapeStyle
+    let thickness: Double
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1)
+            Circle()
+                .trim(from: 0, to: 0.75)
+                .stroke(paint, style: StrokeStyle(lineWidth: thickness, lineCap: .round))
+                .rotationEffect(.degrees(t * 360))
+                .padding(thickness / 2)
+        }
     }
 }
 
@@ -1263,6 +1640,21 @@ struct ElementView: View {
         }
     }
 
+    private var ringLook: some View {
+        let thickness = max(2, min(element.w, element.h) * 0.1)
+        return ZStack {
+            Circle().stroke(Color(white: 0.3), lineWidth: thickness)
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(paint, style: StrokeStyle(lineWidth: thickness, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Text("\(Int((progress * 100).rounded()))%")
+                .font(font)
+                .foregroundColor(swatch(element.ink))
+        }
+        .padding(thickness / 2)
+    }
+
     private var tabsLook: some View {
         let names = element.text.components(separatedBy: "\n")
         return HStack(spacing: 4) {
@@ -1295,6 +1687,20 @@ struct ElementView: View {
             sliderLook
         case .tabs:
             tabsLook
+        case .clock:
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(context.date, format: .dateTime.hour().minute())
+                    .font(font)
+                    .minimumScaleFactor(0.3)
+                    .lineLimit(1)
+                    .foregroundColor(swatch(element.ink))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(shape.fill(paint))
+            }
+        case .spinner:
+            SpinnerLook(paint: paint, thickness: max(2, min(element.w, element.h) * 0.1))
+        case .ring:
+            ringLook
         case .text, .button:
             Text(element.text)
                 .font(font)
@@ -1623,6 +2029,7 @@ struct EditorView: View {
     @State private var snap = true
     @State private var grid = false
     @State private var arrows = false
+    @AppStorage("previewFX") private var previewFX = true
     @AppStorage("accent") private var accent = 10
     @AppStorage("editorBack") private var editorBack = 30
     @AppStorage("nudgeStep") private var nudgeStep = 1.0
@@ -1808,6 +2215,7 @@ struct EditorView: View {
                 Toggle("Snap", isOn: $snap)
                 Toggle("Grid", isOn: $grid)
                 Toggle("Arrow buttons", isOn: $arrows)
+                Toggle("Preview effects", isOn: $previewFX)
             }
         }
         .padding()
@@ -1820,6 +2228,7 @@ struct CanvasView: View {
     let snap: Bool
     let grid: Bool
     @AppStorage("outline") private var outline = 23
+    @AppStorage("previewFX") private var previewFX = true
     @State private var origin: CGPoint?
     @AppStorage("unlimited") private var unlimited = false
     @AppStorage("snapStep") private var snapStep = 5.0
@@ -1857,15 +2266,24 @@ struct CanvasView: View {
         ZStack {
             Backdrop(screen: model.frame)
                 .onTapGesture { model.selected = nil }
+            if previewFX { particles(front: false) }
             ForEach(model.frame.elements) { element in
                 item(element)
             }
+            if previewFX { particles(front: true) }
             if grid { gridLines }
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
         .coordinateSpace(name: "canvas")
         .clipped()
         .border(Color.gray.opacity(0.5))
+    }
+
+    @ViewBuilder private func particles(front: Bool) -> some View {
+        let list = (model.frame.particles ?? []).filter { $0.front == front }
+        if !list.isEmpty {
+            ParticleField(systems: list)
+        }
     }
 
     private var gridLines: some View {
@@ -1912,6 +2330,7 @@ struct CanvasView: View {
 
     private func item(_ element: Element) -> some View {
         ElementView(element: element)
+            .modifier(Effects(element: element, active: previewFX))
             .opacity(element.hidden ? 0.25 : 1)
             .contentShape(Rectangle())
             .overlay {
@@ -2075,6 +2494,15 @@ struct InspectorView: View {
             if e.wrappedValue.kind == .console {
                 consoleSection(e)
             }
+            Section("Effect") {
+                Picker("Effect", selection: e.effect) {
+                    ForEach(EffectKind.allCases) { Text($0.rawValue).tag($0) }
+                }
+                if e.wrappedValue.effect != .none {
+                    SliderRow(title: "Effect speed", value: e.effectSpeed, range: 0.1...4,
+                              step: 0.1, unlocked: 0.01...30)
+                }
+            }
             if hasText(e.wrappedValue.kind) {
                 textSection(e)
             }
@@ -2109,7 +2537,7 @@ struct InspectorView: View {
 
     private func hasText(_ kind: Kind) -> Bool {
         kind == .text || kind == .button || kind == .row || kind == .toggle || kind == .console
-            || kind == .slider || kind == .tabs
+            || kind == .slider || kind == .tabs || kind == .clock || kind == .ring
     }
 
     private func textSection(_ e: Binding<Element>) -> some View {
@@ -2426,6 +2854,141 @@ struct PopupPage: View {
     }
 }
 
+struct ParticlePreview: View {
+    let systems: [Particles]
+    var body: some View {
+        ParticleField(systems: systems)
+            .frame(height: 180)
+            .frame(maxWidth: .infinity)
+            .background(Color.black)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+struct ParticlesPage: View {
+    @Binding var list: [Particles]
+
+    var body: some View {
+        Form {
+            ParticlePreview(systems: list)
+            ForEach($list) { $system in
+                Section {
+                    NavigationLink("Edit " + system.name) {
+                        ParticleEditor(system: $system)
+                    }
+                    Button("Duplicate") {
+                        var copy = system
+                        copy.id = UUID()
+                        list.append(copy)
+                    }
+                    Button("Remove", role: .destructive) {
+                        let id = system.id
+                        list.removeAll { $0.id == id }
+                    }
+                }
+            }
+            Menu("+ Add particles") {
+                ForEach(Particles.presetNames, id: \.self) { name in
+                    Button(name == "Custom" ? "Create your own" : name) {
+                        list.append(Particles.preset(name))
+                    }
+                }
+            }
+        }
+        .navigationTitle("Particles")
+    }
+}
+
+struct ParticleEditor: View {
+    @Binding var system: Particles
+    @State private var photo: PhotosPickerItem?
+
+    var body: some View {
+        Form {
+            ParticlePreview(systems: [system])
+            lookSection
+            colorSection
+            motionSection
+        }
+        .navigationTitle(system.name)
+        .onChange(of: photo) { item in
+            guard let item = item else { return }
+            Task { @MainActor in
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let result = prepareImage(data),
+                   let image = UIImage(data: result.data) {
+                    // Particle pictures are kept small.
+                    let ratio = min(1, 128 / max(image.size.width, image.size.height))
+                    let size = CGSize(width: image.size.width * ratio,
+                                      height: image.size.height * ratio)
+                    system.image = image.preparingThumbnail(of: size)?.pngData() ?? result.data
+                }
+                photo = nil
+            }
+        }
+    }
+
+    private var lookSection: some View {
+        Section("Look") {
+            TextField("Name", text: $system.name)
+            Picker("Shape", selection: $system.shape) {
+                ForEach(ParticleShape.allCases) { Text($0.rawValue).tag($0) }
+            }
+            if system.shape == .text {
+                TextField("Characters or emoji", text: $system.symbol)
+            }
+            if system.shape == .image {
+                PhotosPicker("Choose picture", selection: $photo, matching: .images)
+            }
+            SliderRow(title: "Smallest size", value: $system.minSize, range: 1...60,
+                      unlocked: 1...400)
+            SliderRow(title: "Largest size", value: $system.maxSize, range: 1...60,
+                      unlocked: 1...400)
+            SliderRow(title: "Opacity", value: $system.opacity, range: 0.05...1, step: 0.05)
+            Toggle("Twinkle", isOn: $system.twinkle)
+            Toggle("In front of layers", isOn: $system.front)
+        }
+    }
+
+    private var colorSection: some View {
+        Section("Colours (text and shapes)") {
+            Toggle("Rainbow", isOn: $system.rainbow)
+            if !system.rainbow {
+                ForEach(system.colors.indices, id: \.self) { i in
+                    Swatches(title: "Colour \(i + 1)", selection: color(i))
+                }
+                Button("+ Add colour") { system.colors.append(10) }
+                Button("Remove last colour", role: .destructive) {
+                    if system.colors.count > 1 { system.colors.removeLast() }
+                }
+                .disabled(system.colors.count < 2)
+            }
+        }
+    }
+
+    private var motionSection: some View {
+        Section("Movement") {
+            SliderRow(title: "Amount", value: $system.count, range: 1...200,
+                      unlocked: 1...1500)
+            SliderRow(title: "Speed", value: $system.speed, range: 0...700, step: 10,
+                      unlocked: 0...4000)
+            SliderRow(title: "Direction (0 down, 180 up)", value: $system.direction,
+                      range: 0...360, step: 15)
+            SliderRow(title: "Wobble", value: $system.wobble, range: 0...80,
+                      unlocked: 0...500)
+            SliderRow(title: "Spin", value: $system.spin, range: 0...360, step: 15,
+                      unlocked: 0...3000)
+        }
+    }
+
+    private func color(_ index: Int) -> Binding<Int> {
+        Binding(
+            get: { system.colors.indices.contains(index) ? system.colors[index] : 4 },
+            set: { if system.colors.indices.contains(index) { system.colors[index] = $0 } }
+        )
+    }
+}
+
 struct InteractionEditor: View {
     @ObservedObject var model: EditorModel
     @Binding var item: Interaction
@@ -2477,6 +3040,12 @@ struct InteractionEditor: View {
         if item.action == .recolor {
             Toggle("Change text colour instead", isOn: $item.colorText)
             Swatches(title: "New colour", selection: $item.color)
+        }
+        if item.action == .sound {
+            Picker("Sound", selection: $item.sound) {
+                ForEach(SoundKind.allCases) { Text($0.title).tag($0) }
+            }
+            Button("Test sound") { AudioServicesPlaySystemSound(SystemSoundID(item.sound.rawValue)) }
         }
         if item.action == .setText {
             TextField("New text", text: $item.newText, axis: .vertical)
@@ -2576,6 +3145,24 @@ struct ScreenView: View {
                             set: { model.frame.radial = $0 }
                         )
                     )
+                }
+                Section("Effects") {
+                    NavigationLink("Particles: \(model.frame.particles?.count ?? 0)") {
+                        ParticlesPage(list: Binding(
+                            get: { model.frame.particles ?? [] },
+                            set: { model.frame.particles = $0 }
+                        ))
+                    }
+                    Toggle("Rainbow background", isOn: Binding(
+                        get: { model.frame.rainbow ?? false },
+                        set: { model.frame.rainbow = $0 }
+                    ))
+                    if model.frame.rainbow ?? false {
+                        SliderRow(title: "Rainbow speed", value: Binding(
+                            get: { model.frame.rainbowSpeed ?? 1 },
+                            set: { model.frame.rainbowSpeed = $0 }
+                        ), range: 0.1...5, step: 0.1, unlocked: 0.01...40)
+                    }
                 }
                 Button("Duplicate screen") { model.addFrame(copying: true); dismiss() }
                 Button("Delete screen", role: .destructive) { model.deleteFrame(); dismiss() }
@@ -2763,6 +3350,10 @@ struct PlayerView: View {
     @State private var colors: [UUID: Int] = [:]
     @State private var inks: [UUID: Int] = [:]
     @State private var texts: [UUID: String] = [:]
+    @State private var shakes: CGFloat = 0
+    @State private var flashAmount = 0.0
+    @State private var particlesOff = false
+    @State private var burstStart: Date?
     @State private var stage = RespringStage.idle
     @State private var respringTask: Task<Void, Never>?
     @AppStorage("respringTime") private var respringTime = 2.2
@@ -2789,11 +3380,18 @@ struct PlayerView: View {
                         .transition(transition.effect)
                 }
                 .frame(width: canvasSize.width, height: canvasSize.height)
+                .modifier(ShakeEffect(amount: shakes))
                 .clipped()
                 .scaleEffect(scale)
                 .position(x: geo.size.width / 2, y: geo.size.height / 2)
                 .blur(radius: receding ? 24 : 0)
                 .scaleEffect(receding ? 0.88 : 1)
+                if let start = burstStart {
+                    Burst(start: start).id(start)
+                }
+                Color.white
+                    .opacity(flashAmount)
+                    .allowsHitTesting(false)
                 if hint && showHint { hintView }
                 if let item = popup, item.style == .custom {
                     PopupOverlay(item: item, choose: choose)
@@ -2820,6 +3418,11 @@ struct PlayerView: View {
         .background(alertHost)
         .overlay(sheetHost.allowsHitTesting(false))
         .task(id: popupVisit) { await autoCloseSystemPopup() }
+        .task(id: burstStart) {
+            guard burstStart != nil else { return }
+            try? await Task.sleep(nanoseconds: 3_100_000_000)
+            if !Task.isCancelled { burstStart = nil }
+        }
         .tint(Color(uiColor: .systemBlue))
         .confirmationDialog("Prototype", isPresented: $menu) {
             Button("Restart") {
@@ -2896,11 +3499,27 @@ struct PlayerView: View {
     private func screenLayer(_ screen: Frame) -> some View {
         ZStack {
             Backdrop(screen: screen)
+            particleLayer(screen, front: false)
             ForEach(screen.elements, id: \.link) { element in
                 playable(element)
             }
+            particleLayer(screen, front: true)
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
+    }
+
+    @ViewBuilder private func particleLayer(_ screen: Frame, front: Bool) -> some View {
+        let list = (screen.particles ?? []).filter { $0.front == front }
+        if !list.isEmpty && !particlesOff {
+            ParticleField(systems: list)
+        }
+    }
+
+    private func flash() {
+        flashAmount = 0.9
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.5)) { flashAmount = 0 }
+        }
     }
 
     private func isVisible(_ element: Element) -> Bool {
@@ -2924,6 +3543,7 @@ struct PlayerView: View {
             .simultaneousGesture(
                 DragGesture(minimumDistance: 25).onEnded { swipe(element, $0.translation) },
                 including: has(element, swipes))
+            .modifier(Effects(element: element))
             .modifier(Motion(element: element, replay: replays[element.id] ?? 0))
             .opacity(isVisible(element) ? 1 : 0)
             .allowsHitTesting(isVisible(element))
@@ -3092,6 +3712,16 @@ struct PlayerView: View {
             }
         case .setText:
             if let id = item.layer { texts[id] = item.newText }
+        case .shake:
+            withAnimation(.linear(duration: 0.6)) { shakes += 1 }
+        case .flash:
+            flash()
+        case .burst:
+            burstStart = Date()
+        case .particles:
+            particlesOff.toggle()
+        case .sound:
+            AudioServicesPlaySystemSound(SystemSoundID(item.sound.rawValue))
         }
     }
 
@@ -3204,6 +3834,8 @@ struct PlayerView: View {
         colors = [:]
         inks = [:]
         texts = [:]
+        particlesOff = false
+        burstStart = nil
         popup = nil
         progress = 0
         transition = .instant
