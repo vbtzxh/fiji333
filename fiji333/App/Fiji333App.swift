@@ -201,6 +201,10 @@ struct Element: Codable, Identifiable, Equatable {
     var motionTime: Double = 0.6
     var motionDelay: Double = 0
     var interactions: [Interaction] = []
+    var consoleSpeed: Double = 0.45
+    var consoleWait: Double = 0
+    var consoleLoop = false
+    var consoleScroll = true
 
     var label: String { name.isEmpty ? kind.rawValue : name }
 
@@ -208,6 +212,7 @@ struct Element: Codable, Identifiable, Equatable {
         case id, link, kind, name, x, y, w, h, text, fill, fill2, ink, stroke, strokeWidth
         case radius, fontSize, weight, align, opacity, rotation, shadow, locked, hidden
         case image, imageFit, motion, motionEasing, motionTime, motionDelay, interactions
+        case consoleSpeed, consoleWait, consoleLoop, consoleScroll
     }
 }
 
@@ -252,6 +257,10 @@ extension Element {
         motionTime = read(.motionTime, motionTime)
         motionDelay = read(.motionDelay, motionDelay)
         interactions = read(.interactions, interactions)
+        consoleSpeed = read(.consoleSpeed, consoleSpeed)
+        consoleWait = read(.consoleWait, consoleWait)
+        consoleLoop = read(.consoleLoop, consoleLoop)
+        consoleScroll = read(.consoleScroll, consoleScroll)
 
         if !c.contains(.interactions) {
             let old = try decoder.container(keyedBy: OldKeys.self)
@@ -685,6 +694,8 @@ struct SettingsView: View {
     @AppStorage("exitHold") private var exitHold = 2.0
     @AppStorage("showHint") private var showHint = true
     @AppStorage("vibration") private var vibration = true
+    @AppStorage("respringTime") private var respringTime = 2.2
+    @AppStorage("respringLock") private var respringLock = true
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -713,6 +724,11 @@ struct SettingsView: View {
                     Toggle("Show exit hint", isOn: $showHint)
                     Toggle("Allow vibration", isOn: $vibration)
                 }
+                Section("Respring") {
+                    SliderRow(title: "Loading time (s)", value: $respringTime, range: 0.5...6,
+                              step: 0.5, unlocked: 0.3...60)
+                    Toggle("Lock screen afterwards", isOn: $respringLock)
+                }
                 Button("Reset settings", role: .destructive) { reset() }
             }
             .navigationTitle("Settings")
@@ -729,6 +745,8 @@ struct SettingsView: View {
         exitHold = 2
         showHint = true
         vibration = true
+        respringTime = 2.2
+        respringLock = true
     }
 }
 
@@ -1050,7 +1068,45 @@ struct ElementView: View {
     private var visibleText: String {
         guard let count = lines else { return element.text }
         let all = element.text.components(separatedBy: "\n")
-        return all.prefix(count).joined(separator: "\n")
+        var shown = Array(all.prefix(count))
+        if element.consoleScroll {
+            let fits = max(1, Int((element.h - 24) / (max(1, element.fontSize) * 1.22)))
+            shown = Array(shown.suffix(fits))
+        }
+        return shown.joined(separator: "\n")
+    }
+}
+
+// MARK: - Live console
+
+struct LiveConsole: View {
+    let element: Element
+    let run: String
+    @State private var count = 0
+
+    var body: some View {
+        ElementView(element: element, lines: count)
+            .task(id: run) { await type() }
+    }
+
+    private func type() async {
+        count = 0
+        let total = element.text.components(separatedBy: "\n").count
+        if element.consoleWait > 0 {
+            try? await Task.sleep(nanoseconds: UInt64(element.consoleWait * 1_000_000_000))
+        }
+        let pause = UInt64(max(0.01, element.consoleSpeed) * 1_000_000_000)
+        while !Task.isCancelled {
+            if count >= total {
+                if !element.consoleLoop { return }
+                try? await Task.sleep(nanoseconds: max(pause, 800_000_000))
+                if Task.isCancelled { return }
+                count = 0
+            }
+            try? await Task.sleep(nanoseconds: pause)
+            if Task.isCancelled { return }
+            count += 1
+        }
     }
 }
 
@@ -1718,6 +1774,9 @@ struct InspectorView: View {
             if e.wrappedValue.kind == .image {
                 ImageSection(element: e)
             }
+            if e.wrappedValue.kind == .console {
+                consoleSection(e)
+            }
             if hasText(e.wrappedValue.kind) {
                 textSection(e)
             }
@@ -1728,6 +1787,25 @@ struct InspectorView: View {
                 Toggle("Locked", isOn: e.locked)
                 Toggle("Hidden at start", isOn: e.hidden)
             }
+        }
+    }
+
+    private func consoleSection(_ e: Binding<Element>) -> some View {
+        Section("Console speed") {
+            HStack {
+                Button("Slow") { e.wrappedValue.consoleSpeed = 1.2 }
+                Button("Normal") { e.wrappedValue.consoleSpeed = 0.45 }
+                Button("Fast") { e.wrappedValue.consoleSpeed = 0.15 }
+                Button("Turbo") { e.wrappedValue.consoleSpeed = 0.04 }
+            }
+            .buttonStyle(.bordered)
+            .font(.caption)
+            SliderRow(title: "Seconds per line", value: e.consoleSpeed, range: 0.02...3,
+                      step: 0.05, unlocked: 0.01...60)
+            SliderRow(title: "Start delay (s)", value: e.consoleWait, range: 0...10,
+                      step: 0.5, unlocked: 0...600)
+            Toggle("Loop", isOn: e.consoleLoop)
+            Toggle("Auto scroll", isOn: e.consoleScroll)
         }
     }
 
@@ -2030,6 +2108,71 @@ struct Step {
     let duration: Double
 }
 
+enum RespringStage {
+    case idle, shrink, black, lock
+}
+
+struct RespringOverlay: View {
+    let stage: RespringStage
+    let unlock: () -> Void
+
+    var body: some View {
+        ZStack {
+            if stage == .shrink {
+                Color.black.opacity(0.45)
+            }
+            if stage == .black {
+                Color.black
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(1.25)
+            }
+            if stage == .lock {
+                lockScreen
+                    .transition(.opacity.combined(with: .scale(scale: 1.08)))
+            }
+        }
+    }
+
+    private var lockScreen: some View {
+        ZStack {
+            LinearGradient(colors: [Color(red: 0.05, green: 0.1, blue: 0.3), .indigo, .teal],
+                           startPoint: .top, endPoint: .bottom)
+            VStack {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    VStack(spacing: 2) {
+                        Text(context.date, format: .dateTime.weekday(.wide).day().month(.wide))
+                            .font(.headline)
+                        Text(context.date, format: .dateTime.hour().minute())
+                            .font(.system(size: 96, weight: .bold, design: .rounded))
+                            .minimumScaleFactor(0.5)
+                            .lineLimit(1)
+                            .foregroundStyle(.ultraThickMaterial)
+                            .environment(\.colorScheme, .light)
+                    }
+                }
+                .padding(.top, 80)
+                Spacer()
+                Text("Swipe up to open")
+                    .font(.subheadline.bold())
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 14)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(Color.white.opacity(0.35)))
+                Capsule()
+                    .frame(width: 140, height: 5)
+                    .padding(.top, 18)
+                    .padding(.bottom, 10)
+            }
+            .foregroundColor(.white)
+        }
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 30).onEnded { drag in
+            if drag.translation.height < -60 { unlock() }
+        })
+    }
+}
+
 struct PlayerView: View {
     @EnvironmentObject var store: Store
     let project: Project
@@ -2046,9 +2189,11 @@ struct PlayerView: View {
     @State private var visibility: [UUID: Bool] = [:]
     @State private var replays: [UUID: Int] = [:]
     @State private var visit = 0
-    @State private var lines = 0
     @State private var popup: Interaction?
-    @State private var respringing = false
+    @State private var stage = RespringStage.idle
+    @State private var respringTask: Task<Void, Never>?
+    @AppStorage("respringTime") private var respringTime = 2.2
+    @AppStorage("respringLock") private var respringLock = true
     @State private var menu = false
     @State private var hint = true
     @AppStorage("exitHold") private var exitHold = 2.0
@@ -2074,11 +2219,11 @@ struct PlayerView: View {
                 .clipped()
                 .scaleEffect(scale)
                 .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                .blur(radius: receding ? 24 : 0)
+                .scaleEffect(receding ? 0.88 : 1)
                 if hint && showHint { hintView }
-                if respringing {
-                    Color.black
-                    ProgressView().tint(.white).scaleEffect(1.6)
-                }
+                RespringOverlay(stage: stage, unlock: unlock)
+                    .allowsHitTesting(stage != .idle)
             }
             .contentShape(Rectangle())
             .simultaneousGesture(LongPressGesture(minimumDuration: max(0.8, exitHold)).onEnded { _ in menu = true })
@@ -2086,12 +2231,14 @@ struct PlayerView: View {
         .background(Color.black)
         .ignoresSafeArea()
         .onAppear { schedule() }
-        .task(id: visit) { await typeLines() }
         .task {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             hint = false
         }
-        .onDisappear { cancelAll() }
+        .onDisappear {
+            cancelAll()
+            respringTask?.cancel()
+        }
         .alert(popup?.title ?? "", isPresented: Binding(
             get: { popup != nil },
             set: { if !$0 { popup = nil } }
@@ -2101,7 +2248,11 @@ struct PlayerView: View {
             Text(popup?.message ?? "")
         }
         .confirmationDialog("Prototype", isPresented: $menu) {
-            Button("Restart") { restart() }
+            Button("Restart") {
+                respringTask?.cancel()
+                stage = .idle
+                restart()
+            }
             Button("Exit prototype", role: .destructive) { store.playing = nil }
         }
     }
@@ -2139,8 +2290,7 @@ struct PlayerView: View {
 
     private func playable(_ element: Element) -> some View {
         let swipes: [Trigger] = [.swipeLeft, .swipeRight, .swipeUp, .swipeDown]
-        return ElementView(element: element, progress: progress,
-                           isOn: switches.contains(element.id), lines: lines)
+        return content(element)
             .contentShape(Rectangle())
             .gesture(TapGesture(count: 2).onEnded { fire(element, .doubleTap) },
                      including: has(element, [.doubleTap]))
@@ -2157,15 +2307,13 @@ struct PlayerView: View {
             .position(x: element.x, y: element.y)
     }
 
-    private func typeLines() async {
-        lines = 0
-        while !Task.isCancelled {
-            let counts = frame.elements.filter { $0.kind == .console }
-                .map { $0.text.components(separatedBy: "\n").count }
-            if lines >= (counts.max() ?? 0) { return }
-            try? await Task.sleep(nanoseconds: 450_000_000)
-            if Task.isCancelled { return }
-            lines += 1
+    @ViewBuilder private func content(_ element: Element) -> some View {
+        if element.kind == .console {
+            LiveConsole(element: element,
+                        run: "\(visit)-\(replays[element.id] ?? 0)-\(element.id)")
+        } else {
+            ElementView(element: element, progress: progress,
+                        isOn: switches.contains(element.id))
         }
     }
 
@@ -2295,14 +2443,32 @@ struct PlayerView: View {
         }
     }
 
+    private var receding: Bool {
+        stage == .shrink || stage == .black
+    }
+
     private func respring() {
+        guard stage == .idle else { return }
         cancelAll()
-        respringing = true
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            respringing = false
-            restart()
+        respringTask = Task { @MainActor in
+            withAnimation(.easeIn(duration: 0.4)) { stage = .shrink }
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            if Task.isCancelled { return }
+            withAnimation(.easeInOut(duration: 0.3)) { stage = .black }
+            let wait = max(0.3, respringTime)
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            if Task.isCancelled { return }
+            if respringLock {
+                withAnimation(.easeOut(duration: 0.55)) { stage = .lock }
+            } else {
+                unlock()
+            }
         }
+    }
+
+    private func unlock() {
+        restart()
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) { stage = .idle }
     }
 
     private func cancelAll() {
