@@ -502,6 +502,7 @@ struct HomeView: View {
     @State private var message = ""
     @State private var showMessage = false
     @State private var showAbout = false
+    @State private var showSettings = false
     @State private var importing = false
     @State private var exporting = false
     @State private var document = DataDocument(data: Data())
@@ -510,6 +511,9 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button("Settings and slider limits") { showSettings = true }
+                }
                 Section("New file") {
                     Button("Blank design") { create(Templates.blank()) }
                     Button("Template: Jailbreak Starter") { create(Templates.jailbreak()) }
@@ -533,8 +537,14 @@ struct HomeView: View {
             }
             .navigationTitle("Fiji Studio")
             .toolbar {
-                Button("About") { showAbout = true }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Settings") { showSettings = true }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("About") { showAbout = true }
+                }
             }
+            .sheet(isPresented: $showSettings) { SettingsView() }
             .alert("Rename file", isPresented: Binding(
                 get: { renaming != nil },
                 set: { if !$0 { renaming = nil } }
@@ -663,6 +673,236 @@ struct ScreenPicture: View {
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
         .clipped()
+    }
+}
+
+struct SettingsView: View {
+    @AppStorage("unlimited") private var unlimited = false
+    @AppStorage("snapStep") private var snapStep = 5.0
+    @AppStorage("gridSize") private var gridSize = 30.0
+    @AppStorage("nudgeStep") private var nudgeStep = 1.0
+    @AppStorage("gap") private var gap = 16.0
+    @AppStorage("exitHold") private var exitHold = 2.0
+    @AppStorage("showHint") private var showHint = true
+    @AppStorage("vibration") private var vibration = true
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("Unlock slider limits", isOn: $unlimited)
+                } header: {
+                    Text("Limits")
+                } footer: {
+                    Text("Allows huge sizes, off-screen positions, long timings and deeper zoom.")
+                }
+                Section("Editor") {
+                    SliderRow(title: "Snap step", value: $snapStep, range: 1...50,
+                              unlocked: 1...500)
+                    SliderRow(title: "Grid size", value: $gridSize, range: 10...100,
+                              unlocked: 5...500)
+                    SliderRow(title: "Arrow move step", value: $nudgeStep, range: 1...50,
+                              unlocked: 0.1...500)
+                    SliderRow(title: "Default spacing", value: $gap, range: 0...80,
+                              unlocked: -500...1000)
+                }
+                Section("Prototype") {
+                    SliderRow(title: "Hold to exit (s)", value: $exitHold, range: 1...5, step: 0.5,
+                              unlocked: 0.8...15)
+                    Toggle("Show exit hint", isOn: $showHint)
+                    Toggle("Allow vibration", isOn: $vibration)
+                }
+                Button("Reset settings", role: .destructive) { reset() }
+            }
+            .navigationTitle("Settings")
+            .toolbar { Button("Done") { dismiss() } }
+        }
+    }
+
+    private func reset() {
+        unlimited = false
+        snapStep = 5
+        gridSize = 30
+        nudgeStep = 1
+        gap = 16
+        exitHold = 2
+        showHint = true
+        vibration = true
+    }
+}
+
+// MARK: - Arrange and spacing
+
+struct ArrangeView: View {
+    @ObservedObject var model: EditorModel
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("gap") private var gap = 16.0
+    @State private var picked: Set<UUID> = []
+    @State private var columns = 2
+    @State private var copies = 3
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("1. Choose layers") {
+                    HStack {
+                        Button("Select all") {
+                            picked = Set(model.frame.elements.filter { !$0.locked }.map { $0.id })
+                        }
+                        Spacer()
+                        Button("Clear") { picked = [] }
+                    }
+                    .buttonStyle(.bordered)
+                    ForEach(model.frame.elements.filter { !$0.locked }) { element in
+                        Button {
+                            if picked.contains(element.id) { picked.remove(element.id) }
+                            else { picked.insert(element.id) }
+                        } label: {
+                            HStack {
+                                Text(element.label + " " + String(element.text.prefix(14)))
+                                    .foregroundColor(.primary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(picked.contains(element.id) ? "Selected" : "")
+                            }
+                        }
+                    }
+                }
+                Section("2. Spacing") {
+                    SliderRow(title: "Gap", value: $gap, range: 0...80, unlocked: -500...1000)
+                    Button("Stack vertically") { stack(vertical: true) }
+                    Button("Stack horizontally") { stack(vertical: false) }
+                    Stepper("Columns: \(columns)", value: $columns, in: 1...12)
+                    Button("Arrange as grid") { makeGrid() }
+                    Button("Space evenly down") { distribute(vertical: true) }
+                    Button("Space evenly across") { distribute(vertical: false) }
+                }
+                .disabled(picked.count < 2)
+                Section("Align") {
+                    Button("Centre on screen across") { apply { $0.x = 195 } }
+                    Button("Centre on screen down") { centreDown() }
+                    Button("Align left edges") { alignLeft() }
+                    Button("Align top edges") { alignTop() }
+                    Button("Same width as first") { sameSize(width: true) }
+                    Button("Same height as first") { sameSize(width: false) }
+                }
+                .disabled(picked.isEmpty)
+                Section("Repeat") {
+                    Stepper("Copies: \(copies)", value: $copies, in: 1...30)
+                    Button("Repeat downwards") { repeatDown() }
+                }
+                .disabled(picked.count != 1)
+            }
+            .navigationTitle("Arrange")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Done") { dismiss() } }
+        }
+        .onAppear {
+            if let id = model.selected { picked = [id] }
+        }
+    }
+
+    private var chosen: [Element] {
+        model.frame.elements.filter { picked.contains($0.id) && !$0.locked }
+    }
+
+    private func apply(_ edit: (inout Element) -> Void) {
+        model.checkpoint()
+        for item in chosen {
+            model.change(item.id, edit)
+        }
+    }
+
+    private func place(_ items: [Element]) {
+        model.checkpoint()
+        for item in items {
+            model.change(item.id) { $0.x = item.x; $0.y = item.y }
+        }
+    }
+
+    private func stack(vertical: Bool) {
+        var items = chosen.sorted { vertical ? $0.y < $1.y : $0.x < $1.x }
+        guard let first = items.first else { return }
+        var edge = vertical ? first.y - first.h / 2 : first.x - first.w / 2
+        for i in items.indices {
+            if vertical {
+                items[i].y = edge + items[i].h / 2
+                edge += items[i].h + gap
+            } else {
+                items[i].x = edge + items[i].w / 2
+                edge += items[i].w + gap
+            }
+        }
+        place(items)
+    }
+
+    private func makeGrid() {
+        var items = chosen.sorted { ($0.y, $0.x) < ($1.y, $1.x) }
+        guard !items.isEmpty else { return }
+        let cellW = items.map { $0.w }.max() ?? 0
+        let cellH = items.map { $0.h }.max() ?? 0
+        let total = Double(columns) * cellW + Double(columns - 1) * gap
+        let left = 195 - total / 2
+        let top = items.map { $0.y - $0.h / 2 }.min() ?? 0
+        for i in items.indices {
+            let column = Double(i % columns)
+            let row = Double(i / columns)
+            items[i].x = left + column * (cellW + gap) + cellW / 2
+            items[i].y = top + row * (cellH + gap) + cellH / 2
+        }
+        place(items)
+    }
+
+    private func distribute(vertical: Bool) {
+        var items = chosen.sorted { vertical ? $0.y < $1.y : $0.x < $1.x }
+        guard items.count > 2, let first = items.first, let last = items.last else { return }
+        let start = vertical ? first.y : first.x
+        let end = vertical ? last.y : last.x
+        let space = (end - start) / Double(items.count - 1)
+        for i in items.indices {
+            if vertical { items[i].y = start + Double(i) * space }
+            else { items[i].x = start + Double(i) * space }
+        }
+        place(items)
+    }
+
+    private func centreDown() {
+        var items = chosen
+        let top = items.map { $0.y - $0.h / 2 }.min() ?? 0
+        let bottom = items.map { $0.y + $0.h / 2 }.max() ?? 0
+        let move = 422 - (top + bottom) / 2
+        for i in items.indices { items[i].y += move }
+        place(items)
+    }
+
+    private func alignLeft() {
+        let edge = chosen.map { $0.x - $0.w / 2 }.min() ?? 0
+        apply { $0.x = edge + $0.w / 2 }
+    }
+
+    private func alignTop() {
+        let edge = chosen.map { $0.y - $0.h / 2 }.min() ?? 0
+        apply { $0.y = edge + $0.h / 2 }
+    }
+
+    private func sameSize(width: Bool) {
+        guard let first = chosen.first else { return }
+        apply {
+            if width { $0.w = first.w } else { $0.h = first.h }
+        }
+    }
+
+    private func repeatDown() {
+        guard let source = chosen.first else { return }
+        model.checkpoint()
+        for i in 1...copies {
+            var copy = source
+            copy.id = UUID()
+            copy.link = UUID()
+            copy.y += Double(i) * (source.h + gap)
+            model.frame.elements.append(copy)
+        }
     }
 }
 
@@ -1033,7 +1273,7 @@ final class EditorModel: ObservableObject {
 }
 
 enum Panel: String, Identifiable {
-    case design, layers, screen
+    case design, layers, screen, arrange
     var id: String { rawValue }
 }
 
@@ -1043,6 +1283,8 @@ struct EditorView: View {
     @State private var panel: Panel?
     @State private var snap = true
     @State private var grid = false
+    @State private var arrows = false
+    @AppStorage("nudgeStep") private var nudgeStep = 1.0
     @State private var pickingPhoto = false
     @State private var photo: PhotosPickerItem?
     @State private var importingImage = false
@@ -1068,6 +1310,7 @@ struct EditorView: View {
                 }
             if model.selected != nil {
                 selectionBar
+                if arrows { nudgeBar }
             }
             bottomBar
         }
@@ -1078,6 +1321,7 @@ struct EditorView: View {
                 case .design: InspectorView(model: model)
                 case .layers: LayersView(model: model)
                 case .screen: ScreenView(model: model)
+                case .arrange: ArrangeView(model: model)
                 }
             }
             .presentationDetents([.medium, .large])
@@ -1159,6 +1403,27 @@ struct EditorView: View {
         }
     }
 
+    private var nudgeBar: some View {
+        HStack {
+            Button("Left") { nudge(-1, 0) }
+            Button("Up") { nudge(0, -1) }
+            Button("Down") { nudge(0, 1) }
+            Button("Right") { nudge(1, 0) }
+        }
+        .buttonStyle(.bordered)
+        .font(.caption)
+        .padding(.bottom, 6)
+    }
+
+    private func nudge(_ dx: Double, _ dy: Double) {
+        guard let item = model.element, !item.locked else { return }
+        model.checkpoint()
+        model.change(item.id) {
+            $0.x += dx * nudgeStep
+            $0.y += dy * nudgeStep
+        }
+    }
+
     private var selectionBar: some View {
         HStack {
             Button("Edit") { model.checkpoint(); panel = .design }
@@ -1193,11 +1458,14 @@ struct EditorView: View {
             Spacer()
             Button("Layers") { panel = .layers }
             Spacer()
+            Button("Arrange") { panel = .arrange }
+            Spacer()
             Button("Screen") { model.checkpoint(); panel = .screen }
             Spacer()
             Menu("View") {
                 Toggle("Snap", isOn: $snap)
                 Toggle("Grid", isOn: $grid)
+                Toggle("Arrow buttons", isOn: $arrows)
             }
         }
         .padding()
@@ -1210,6 +1478,9 @@ struct CanvasView: View {
     let snap: Bool
     let grid: Bool
     @State private var origin: CGPoint?
+    @AppStorage("unlimited") private var unlimited = false
+    @AppStorage("snapStep") private var snapStep = 5.0
+    @AppStorage("gridSize") private var gridSize = 30.0
     @State private var zoom: CGFloat = 1
     @State private var pan = CGSize.zero
     @GestureState private var pinch: CGFloat = 1
@@ -1231,6 +1502,14 @@ struct CanvasView: View {
         .overlay(alignment: .bottomTrailing) { zoomButtons }
     }
 
+    private var zoomRange: ClosedRange<CGFloat> {
+        unlimited ? 0.05...30 : 0.4...5
+    }
+
+    private func limited(_ value: CGFloat) -> CGFloat {
+        min(zoomRange.upperBound, max(zoomRange.lowerBound, value))
+    }
+
     private var board: some View {
         ZStack {
             swatch(model.frame.fill)
@@ -1248,11 +1527,12 @@ struct CanvasView: View {
 
     private var gridLines: some View {
         Path { path in
-            for x in stride(from: CGFloat(15), to: canvasSize.width, by: 30) {
+            let space = CGFloat(max(5, gridSize))
+            for x in stride(from: space, to: canvasSize.width, by: space) {
                 path.move(to: CGPoint(x: x, y: 0))
                 path.addLine(to: CGPoint(x: x, y: canvasSize.height))
             }
-            for y in stride(from: CGFloat(32), to: canvasSize.height, by: 30) {
+            for y in stride(from: space, to: canvasSize.height, by: space) {
                 path.move(to: CGPoint(x: 0, y: y))
                 path.addLine(to: CGPoint(x: canvasSize.width, y: y))
             }
@@ -1263,9 +1543,9 @@ struct CanvasView: View {
 
     private var zoomButtons: some View {
         HStack {
-            Button("-") { zoom = max(0.4, zoom / 1.25) }
+            Button("-") { zoom = limited(zoom / 1.25) }
             Button("Fit") { zoom = 1; pan = .zero }
-            Button("+") { zoom = min(5, zoom * 1.25) }
+            Button("+") { zoom = limited(zoom * 1.25) }
         }
         .buttonStyle(.bordered)
         .font(.caption)
@@ -1284,7 +1564,7 @@ struct CanvasView: View {
     private var zooming: some Gesture {
         MagnificationGesture()
             .updating($pinch) { value, state, _ in state = value }
-            .onEnded { value in zoom = min(5, max(0.4, zoom * value)) }
+            .onEnded { value in zoom = limited(zoom * value) }
     }
 
     private func item(_ element: Element) -> some View {
@@ -1314,9 +1594,11 @@ struct CanvasView: View {
                 var x = Double(start.x + value.translation.width)
                 var y = Double(start.y + value.translation.height)
                 if snap {
-                    x = (x / 5).rounded() * 5
-                    y = (y / 5).rounded() * 5
+                    let unit = max(1, snapStep)
+                    x = (x / unit).rounded() * unit
+                    y = (y / unit).rounded() * unit
                     if abs(x - 195) < 10 { x = 195 }
+                    if abs(y - 422) < 10 { y = 422 }
                 }
                 model.change(element.id) { $0.x = x; $0.y = y }
             }
@@ -1356,15 +1638,41 @@ struct SliderRow: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     var step: Double = 1
+    var unlocked: ClosedRange<Double>?
+    @AppStorage("unlimited") private var unlimited = false
+
+    private var limits: ClosedRange<Double> {
+        unlimited ? (unlocked ?? range) : range
+    }
+
+    // Always includes the current value so turning limits back on changes nothing.
+    private var sliderRange: ClosedRange<Double> {
+        min(limits.lowerBound, value)...max(limits.upperBound, value)
+    }
+
+    private var typed: Binding<Double> {
+        Binding(
+            get: { value },
+            set: { value = min(max($0, limits.lowerBound), limits.upperBound) }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading) {
-            Text("\(title): \(String(format: step < 1 ? "%.2f" : "%.0f", value))")
             HStack {
-                Button("-") { value = max(range.lowerBound, value - step) }
+                Text(title)
+                Spacer()
+                TextField(title, value: typed, format: .number.precision(.fractionLength(0...2)))
+                    .keyboardType(.numbersAndPunctuation)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 90)
+            }
+            HStack {
+                Button("-") { typed.wrappedValue = value - step }
                     .buttonStyle(.bordered)
-                Slider(value: $value, in: range)
-                Button("+") { value = min(range.upperBound, value + step) }
+                Slider(value: $value, in: sliderRange)
+                Button("+") { typed.wrappedValue = value + step }
                     .buttonStyle(.bordered)
             }
         }
@@ -1430,7 +1738,8 @@ struct InspectorView: View {
     private func textSection(_ e: Binding<Element>) -> some View {
         Section("Text") {
             TextField("Text", text: e.text, axis: .vertical)
-            SliderRow(title: "Font size", value: e.fontSize, range: 8...96)
+            SliderRow(title: "Font size", value: e.fontSize, range: 8...96,
+                      unlocked: 1...500)
             Picker("Weight", selection: e.weight) {
                 Text("Light").tag(0)
                 Text("Regular").tag(1)
@@ -1449,11 +1758,16 @@ struct InspectorView: View {
 
     private func layoutSection(_ e: Binding<Element>) -> some View {
         Section("Layout") {
-            SliderRow(title: "X", value: e.x, range: 0...390)
-            SliderRow(title: "Y", value: e.y, range: 0...844)
-            SliderRow(title: "Width", value: e.w, range: 4...390)
-            SliderRow(title: "Height", value: e.h, range: 4...844)
-            SliderRow(title: "Rotation", value: e.rotation, range: -180...180)
+            SliderRow(title: "X", value: e.x, range: 0...390,
+                      unlocked: -3000...3000)
+            SliderRow(title: "Y", value: e.y, range: 0...844,
+                      unlocked: -3000...4000)
+            SliderRow(title: "Width", value: e.w, range: 4...390,
+                      unlocked: 1...5000)
+            SliderRow(title: "Height", value: e.h, range: 4...844,
+                      unlocked: 1...5000)
+            SliderRow(title: "Rotation", value: e.rotation, range: -180...180,
+                      unlocked: -3600...3600)
             HStack {
                 Button("Left") { e.wrappedValue.x = e.wrappedValue.w / 2 }
                 Button("Centre") { e.wrappedValue.x = 195 }
@@ -1487,10 +1801,13 @@ struct InspectorView: View {
                     set: { e.wrappedValue.fill2 = $0 }
                 ))
             }
-            SliderRow(title: "Corner radius", value: e.radius, range: 0...200)
+            SliderRow(title: "Corner radius", value: e.radius, range: 0...200,
+                      unlocked: 0...2000)
             SliderRow(title: "Opacity", value: e.opacity, range: 0.05...1, step: 0.05)
-            SliderRow(title: "Shadow", value: e.shadow, range: 0...40)
-            SliderRow(title: "Border width", value: e.strokeWidth, range: 0...20)
+            SliderRow(title: "Shadow", value: e.shadow, range: 0...40,
+                      unlocked: 0...300)
+            SliderRow(title: "Border width", value: e.strokeWidth, range: 0...20,
+                      unlocked: 0...200)
             if e.wrappedValue.strokeWidth > 0 {
                 Swatches(title: "Border colour", selection: e.stroke)
             }
@@ -1546,8 +1863,10 @@ struct MotionPage: View {
             Picker("Easing", selection: $element.motionEasing) {
                 ForEach(Easing.allCases) { Text($0.rawValue).tag($0) }
             }
-            SliderRow(title: "Duration (s)", value: $element.motionTime, range: 0.1...4, step: 0.1)
-            SliderRow(title: "Delay (s)", value: $element.motionDelay, range: 0...10, step: 0.1)
+            SliderRow(title: "Duration (s)", value: $element.motionTime, range: 0.1...4, step: 0.1,
+                      unlocked: 0.05...120)
+            SliderRow(title: "Delay (s)", value: $element.motionDelay, range: 0...10, step: 0.1,
+                      unlocked: 0...600)
         }
         .navigationTitle("Animation")
     }
@@ -1586,7 +1905,8 @@ struct InteractionEditor: View {
                 ForEach(Trigger.allCases) { Text($0.rawValue).tag($0) }
             }
             if item.trigger == .delay {
-                SliderRow(title: "Wait (s)", value: $item.wait, range: 0.1...30, step: 0.1)
+                SliderRow(title: "Wait (s)", value: $item.wait, range: 0.1...30, step: 0.1,
+                          unlocked: 0.1...3600)
             }
             Picker("Action", selection: $item.action) {
                 ForEach(TapAction.allCases) { Text($0.rawValue).tag($0) }
@@ -1605,7 +1925,8 @@ struct InteractionEditor: View {
             Picker("Easing", selection: $item.easing) {
                 ForEach(Easing.allCases) { Text($0.rawValue).tag($0) }
             }
-            SliderRow(title: "Duration (s)", value: $item.duration, range: 0.1...2, step: 0.05)
+            SliderRow(title: "Duration (s)", value: $item.duration, range: 0.1...2, step: 0.05,
+                      unlocked: 0.05...60)
         }
         if item.action == .load {
             Text("The bars fill first, then the destination opens.")
@@ -1730,6 +2051,9 @@ struct PlayerView: View {
     @State private var respringing = false
     @State private var menu = false
     @State private var hint = true
+    @AppStorage("exitHold") private var exitHold = 2.0
+    @AppStorage("showHint") private var showHint = true
+    @AppStorage("vibration") private var vibration = true
 
     private var frame: Frame {
         let id = current ?? start
@@ -1750,14 +2074,14 @@ struct PlayerView: View {
                 .clipped()
                 .scaleEffect(scale)
                 .position(x: geo.size.width / 2, y: geo.size.height / 2)
-                if hint { hintView }
+                if hint && showHint { hintView }
                 if respringing {
                     Color.black
                     ProgressView().tint(.white).scaleEffect(1.6)
                 }
             }
             .contentShape(Rectangle())
-            .simultaneousGesture(LongPressGesture(minimumDuration: 2).onEnded { _ in menu = true })
+            .simultaneousGesture(LongPressGesture(minimumDuration: max(0.8, exitHold)).onEnded { _ in menu = true })
         }
         .background(Color.black)
         .ignoresSafeArea()
@@ -1785,7 +2109,7 @@ struct PlayerView: View {
     private var hintView: some View {
         VStack {
             Spacer()
-            Text("Hold for 2 seconds to exit")
+            Text("Hold for \(String(format: "%g", exitHold)) seconds to exit")
                 .font(.footnote)
                 .padding(10)
                 .background(.ultraThinMaterial)
@@ -1910,7 +2234,9 @@ struct PlayerView: View {
         case .animate:
             if let id = item.layer { replays[id, default: 0] += 1 }
         case .haptic:
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            if vibration {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
         case .restart:
             restart()
         }
