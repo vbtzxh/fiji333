@@ -47,6 +47,8 @@ enum Kind: String, Codable, CaseIterable, Identifiable {
     case progress = "Progress Bar"
     case console = "Console"
     case image = "Image"
+    case slider = "Slider"
+    case tabs = "Tab Bar"
     var id: String { rawValue }
 }
 
@@ -59,6 +61,7 @@ enum Trigger: String, Codable, CaseIterable, Identifiable {
     case swipeUp = "On swipe up"
     case swipeDown = "On swipe down"
     case delay = "After delay"
+    case sliderEnd = "On slider reaches end"
     var id: String { rawValue }
 }
 
@@ -75,11 +78,14 @@ enum TapAction: String, Codable, CaseIterable, Identifiable {
     case animate = "Play layer animation"
     case haptic = "Vibrate"
     case restart = "Restart prototype"
+    case recolor = "Change layer colour"
+    case setText = "Change layer text"
     var id: String { rawValue }
 
     var needsScreen: Bool { self == .goTo || self == .load }
     var needsLayer: Bool {
         self == .show || self == .hide || self == .toggleLayer || self == .animate
+            || self == .recolor || self == .setText
     }
 }
 
@@ -156,6 +162,22 @@ enum MotionKind: String, Codable, CaseIterable, Identifiable {
     var loops: Bool { self == .spin || self == .pulse || self == .blink || self == .float }
 }
 
+enum PopupPlace: String, Codable, CaseIterable, Identifiable {
+    case top = "Top"
+    case middle = "Middle"
+    case bottom = "Bottom"
+    var id: String { rawValue }
+}
+
+struct PopupButton: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var title = "OK"
+    var fill = 10
+    var ink = 4
+    // Holds one follow-up action. Empty means the popup just closes.
+    var then: [Interaction] = []
+}
+
 struct Interaction: Codable, Identifiable, Equatable {
     var id = UUID()
     var trigger: Trigger = .tap
@@ -168,6 +190,68 @@ struct Interaction: Codable, Identifiable, Equatable {
     var transition: ScreenTransition = .dissolve
     var easing: Easing = .easeInOut
     var duration: Double = 0.35
+    var buttons: [PopupButton] = [PopupButton()]
+    var popupFill = 1
+    var popupInk = 4
+    var popupRadius: Double = 24
+    var popupDim: Double = 0.45
+    var popupPlace: PopupPlace = .middle
+    var popupStack = false
+    var autoClose: Double = 0
+    var color = 8
+    var colorText = false
+    var newText = "Done"
+    // What happens after a respring. Empty means restart the prototype.
+    var then: [Interaction] = []
+
+    enum CodingKeys: String, CodingKey {
+        case id, trigger, action, wait, screen, layer, title, message, transition, easing, duration
+        case buttons, popupFill, popupInk, popupRadius, popupDim, popupPlace, popupStack
+        case autoClose, color, colorText, newText, then
+    }
+
+    // Points follow-up actions at the new layers when a screen is duplicated.
+    mutating func remap(_ ids: [UUID: UUID]) {
+        if let old = layer { layer = ids[old] ?? old }
+        for i in then.indices { then[i].remap(ids) }
+        for i in buttons.indices {
+            for j in buttons[i].then.indices { buttons[i].then[j].remap(ids) }
+        }
+    }
+}
+
+// Missing values fall back to defaults so older designs still open.
+extension Interaction {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func read<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? c.decode(T.self, forKey: key)) ?? fallback
+        }
+        self.init()
+        id = read(.id, id)
+        trigger = read(.trigger, trigger)
+        action = read(.action, action)
+        wait = read(.wait, wait)
+        screen = try? c.decode(UUID.self, forKey: .screen)
+        layer = try? c.decode(UUID.self, forKey: .layer)
+        title = read(.title, title)
+        message = read(.message, message)
+        transition = read(.transition, transition)
+        easing = read(.easing, easing)
+        duration = read(.duration, duration)
+        buttons = read(.buttons, buttons)
+        popupFill = read(.popupFill, popupFill)
+        popupInk = read(.popupInk, popupInk)
+        popupRadius = read(.popupRadius, popupRadius)
+        popupDim = read(.popupDim, popupDim)
+        popupPlace = read(.popupPlace, popupPlace)
+        popupStack = read(.popupStack, popupStack)
+        autoClose = read(.autoClose, autoClose)
+        color = read(.color, color)
+        colorText = read(.colorText, colorText)
+        newText = read(.newText, newText)
+        then = read(.then, then)
+    }
 }
 
 struct Element: Codable, Identifiable, Equatable {
@@ -205,6 +289,9 @@ struct Element: Codable, Identifiable, Equatable {
     var consoleWait: Double = 0
     var consoleLoop = false
     var consoleScroll = true
+    var value: Double = 0.5
+    var showValue = true
+    var tabTargets: [UUID?] = []
 
     var label: String { name.isEmpty ? kind.rawValue : name }
 
@@ -213,6 +300,7 @@ struct Element: Codable, Identifiable, Equatable {
         case radius, fontSize, weight, align, opacity, rotation, shadow, locked, hidden
         case image, imageFit, motion, motionEasing, motionTime, motionDelay, interactions
         case consoleSpeed, consoleWait, consoleLoop, consoleScroll
+        case value, showValue, tabTargets
     }
 }
 
@@ -261,6 +349,9 @@ extension Element {
         consoleWait = read(.consoleWait, consoleWait)
         consoleLoop = read(.consoleLoop, consoleLoop)
         consoleScroll = read(.consoleScroll, consoleScroll)
+        value = read(.value, value)
+        showValue = read(.showValue, showValue)
+        tabTargets = read(.tabTargets, tabTargets)
 
         if !c.contains(.interactions) {
             let old = try decoder.container(keyedBy: OldKeys.self)
@@ -300,6 +391,10 @@ func makeElement(_ kind: Kind) -> Element {
     case .toggle: e.text = "Enable tweaks"; e.w = 350; e.h = 52; e.fill = 1
     case .progress: e.w = 300; e.h = 10; e.fill = 8
     case .image: e.w = 250; e.h = 250; e.fill = 2
+    case .slider: e.w = 300; e.h = 60; e.fill = 10; e.fontSize = 15
+    case .tabs:
+        e.text = "Home\nTweaks\nSettings"
+        e.w = 370; e.h = 56; e.y = 780; e.fill = 1; e.radius = 18; e.fontSize = 15
     case .console:
         e.text = "[*] starting\n[+] loading modules\n[+] applying tweaks\n[*] done"
         e.w = 350; e.h = 260; e.fill = 1; e.ink = 8; e.fontSize = 13
@@ -480,6 +575,7 @@ func cachedImage(_ data: Data) -> UIImage? {
 struct RootView: View {
     @EnvironmentObject var store: Store
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("accent") private var accent = 10
     var body: some View {
         ZStack {
             if let id = store.editing, let project = store.projects.first(where: { $0.id == id }) {
@@ -493,6 +589,7 @@ struct RootView: View {
                     .zIndex(1)
             }
         }
+        .tint(swatch(accent))
         .onChange(of: scenePhase) { phase in
             if phase != .active { store.flush() }
         }
@@ -512,6 +609,7 @@ struct HomeView: View {
     @State private var showMessage = false
     @State private var showAbout = false
     @State private var showSettings = false
+    @AppStorage("studioName") private var studioName = "Fiji Studio"
     @State private var importing = false
     @State private var exporting = false
     @State private var document = DataDocument(data: Data())
@@ -544,7 +642,7 @@ struct HomeView: View {
                     load(readFile(url))
                 }
             }
-            .navigationTitle("Fiji Studio")
+            .navigationTitle(studioName)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Settings") { showSettings = true }
@@ -696,11 +794,21 @@ struct SettingsView: View {
     @AppStorage("vibration") private var vibration = true
     @AppStorage("respringTime") private var respringTime = 2.2
     @AppStorage("respringLock") private var respringLock = true
+    @AppStorage("accent") private var accent = 10
+    @AppStorage("editorBack") private var editorBack = 30
+    @AppStorage("outline") private var outline = 23
+    @AppStorage("studioName") private var studioName = "Fiji Studio"
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Customise") {
+                    TextField("Main menu title", text: $studioName)
+                    Swatches(title: "Accent colour", selection: $accent)
+                    Swatches(title: "Editor background", selection: $editorBack)
+                    Swatches(title: "Selection outline", selection: $outline)
+                }
                 Section {
                     Toggle("Unlock slider limits", isOn: $unlimited)
                 } header: {
@@ -732,6 +840,7 @@ struct SettingsView: View {
                 Button("Reset settings", role: .destructive) { reset() }
             }
             .navigationTitle("Settings")
+            .tint(swatch(accent))
             .toolbar { Button("Done") { dismiss() } }
         }
     }
@@ -747,6 +856,10 @@ struct SettingsView: View {
         vibration = true
         respringTime = 2.2
         respringLock = true
+        accent = 10
+        editorBack = 30
+        outline = 23
+        studioName = "Fiji Studio"
     }
 }
 
@@ -943,6 +1056,8 @@ struct ElementView: View {
     var progress: Double = 0.35
     var isOn = false
     var lines: Int?
+    var value: Double?
+    var selectedTab = 0
 
     var body: some View {
         content
@@ -1002,6 +1117,50 @@ struct ElementView: View {
         }
     }
 
+    private var sliderLook: some View {
+        let amount = min(1, max(0, value ?? element.value))
+        return VStack(spacing: 6) {
+            if element.showValue {
+                Text("\(Int((amount * 100).rounded()))%")
+                    .font(font)
+                    .foregroundColor(swatch(element.ink))
+            }
+            GeometryReader { geo in
+                let travel = max(0, geo.size.width - 28)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color(white: 0.3)).frame(height: 8)
+                    Capsule().fill(paint).frame(width: travel * amount + 14, height: 8)
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 28, height: 28)
+                        .shadow(radius: 3)
+                        .offset(x: travel * amount)
+                }
+                .frame(maxHeight: .infinity)
+            }
+        }
+    }
+
+    private var tabsLook: some View {
+        let names = element.text.components(separatedBy: "\n")
+        return HStack(spacing: 4) {
+            ForEach(names.indices, id: \.self) { i in
+                Text(names[i])
+                    .font(font)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .foregroundColor(swatch(element.ink))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(
+                        RoundedRectangle(cornerRadius: element.radius * 0.75, style: .continuous)
+                            .fill(Color.white.opacity(i == selectedTab ? 0.25 : 0))
+                    )
+            }
+        }
+        .padding(4)
+        .background(shape.fill(paint))
+    }
+
     @ViewBuilder private var content: some View {
         switch element.kind {
         case .rect:
@@ -1010,6 +1169,10 @@ struct ElementView: View {
             Ellipse().fill(paint)
         case .image:
             picture
+        case .slider:
+            sliderLook
+        case .tabs:
+            tabsLook
         case .text, .button:
             Text(element.text)
                 .font(font)
@@ -1308,9 +1471,7 @@ final class EditorModel: ObservableObject {
             }
             for i in new.elements.indices {
                 for j in new.elements[i].interactions.indices {
-                    if let old = new.elements[i].interactions[j].layer {
-                        new.elements[i].interactions[j].layer = ids[old]
-                    }
+                    new.elements[i].interactions[j].remap(ids)
                 }
             }
         }
@@ -1340,6 +1501,8 @@ struct EditorView: View {
     @State private var snap = true
     @State private var grid = false
     @State private var arrows = false
+    @AppStorage("accent") private var accent = 10
+    @AppStorage("editorBack") private var editorBack = 30
     @AppStorage("nudgeStep") private var nudgeStep = 1.0
     @State private var pickingPhoto = false
     @State private var photo: PhotosPickerItem?
@@ -1358,7 +1521,7 @@ struct EditorView: View {
             frameTabs
             CanvasView(model: model, snap: snap, grid: grid)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(white: 0.08))
+                .background(swatch(editorBack))
                 .fileImporter(isPresented: $importingImage, allowedContentTypes: [.image]) { result in
                     if case .success(let url) = result, let data = readFile(url) {
                         model.addImage(data)
@@ -1381,6 +1544,7 @@ struct EditorView: View {
                 }
             }
             .presentationDetents([.medium, .large])
+            .tint(swatch(accent))
         }
         .onChange(of: model.project) { value in
             store.update(value)
@@ -1533,6 +1697,7 @@ struct CanvasView: View {
     @ObservedObject var model: EditorModel
     let snap: Bool
     let grid: Bool
+    @AppStorage("outline") private var outline = 23
     @State private var origin: CGPoint?
     @AppStorage("unlimited") private var unlimited = false
     @AppStorage("snapStep") private var snapStep = 5.0
@@ -1629,7 +1794,7 @@ struct CanvasView: View {
             .contentShape(Rectangle())
             .overlay {
                 if model.selected == element.id {
-                    Rectangle().stroke(Color.cyan, lineWidth: 3)
+                    Rectangle().stroke(swatch(outline), lineWidth: 3)
                 }
             }
             .onTapGesture { model.selected = element.id }
@@ -1774,6 +1939,17 @@ struct InspectorView: View {
             if e.wrappedValue.kind == .image {
                 ImageSection(element: e)
             }
+            if e.wrappedValue.kind == .slider {
+                Section("Slider") {
+                    SliderRow(title: "Start value", value: e.value, range: 0...1, step: 0.05)
+                    Toggle("Show percentage", isOn: e.showValue)
+                    Text("Add the trigger On slider reaches end for slide to jailbreak.")
+                        .font(.caption)
+                }
+            }
+            if e.wrappedValue.kind == .tabs {
+                TabsSection(model: model, element: e)
+            }
             if e.wrappedValue.kind == .console {
                 consoleSection(e)
             }
@@ -1811,6 +1987,7 @@ struct InspectorView: View {
 
     private func hasText(_ kind: Kind) -> Bool {
         kind == .text || kind == .button || kind == .row || kind == .toggle || kind == .console
+            || kind == .slider || kind == .tabs
     }
 
     private func textSection(_ e: Binding<Element>) -> some View {
@@ -1973,18 +2150,143 @@ struct InteractionsPage: View {
     }
 }
 
-struct InteractionEditor: View {
+struct TabsSection: View {
+    @ObservedObject var model: EditorModel
+    @Binding var element: Element
+
+    private var names: [String] {
+        element.text.components(separatedBy: "\n")
+    }
+
+    var body: some View {
+        Section("Tabs (one name per line in Text)") {
+            ForEach(names.indices, id: \.self) { i in
+                Picker(names[i] + " opens", selection: target(i)) {
+                    Text("Nothing").tag(UUID?.none)
+                    ForEach(model.project.frames) { frame in
+                        Text(frame.name).tag(Optional(frame.id))
+                    }
+                }
+            }
+            Button("+ Add tab") { element.text += "\nTab" }
+            Button("Remove last tab", role: .destructive) {
+                element.text = names.dropLast().joined(separator: "\n")
+            }
+            .disabled(names.count < 2)
+        }
+    }
+
+    private func target(_ index: Int) -> Binding<UUID?> {
+        Binding(
+            get: { element.tabTargets.indices.contains(index) ? element.tabTargets[index] : nil },
+            set: { value in
+                var list = element.tabTargets
+                while list.count <= index { list.append(nil) }
+                list[index] = value
+                element.tabTargets = list
+            }
+        )
+    }
+}
+
+// A binding to the single follow-up action stored in a list.
+func followUp(_ list: Binding<[Interaction]>, fallback: TapAction) -> Binding<Interaction> {
+    Binding(
+        get: { list.wrappedValue.first ?? Interaction(action: fallback) },
+        set: { list.wrappedValue = [$0] }
+    )
+}
+
+struct FollowPage: View {
+    @ObservedObject var model: EditorModel
+    @Binding var item: Interaction
+    let title: String
+
+    var body: some View {
+        Form {
+            InteractionEditor(model: model, item: $item, showTrigger: false)
+        }
+        .navigationTitle(title)
+    }
+}
+
+struct PopupPage: View {
     @ObservedObject var model: EditorModel
     @Binding var item: Interaction
 
     var body: some View {
-        Group {
-            Picker("Trigger", selection: $item.trigger) {
-                ForEach(Trigger.allCases) { Text($0.rawValue).tag($0) }
+        Form {
+            Section("Message") {
+                TextField("Popup title", text: $item.title)
+                TextField("Popup message", text: $item.message, axis: .vertical)
             }
-            if item.trigger == .delay {
-                SliderRow(title: "Wait (s)", value: $item.wait, range: 0.1...30, step: 0.1,
-                          unlocked: 0.1...3600)
+            ForEach($item.buttons) { $button in
+                Section("Button") {
+                    TextField("Button text", text: $button.title)
+                    NavigationLink("When pressed: \(button.then.first?.action.rawValue ?? "Nothing")") {
+                        FollowPage(model: model,
+                                   item: followUp($button.then, fallback: .none),
+                                   title: button.title)
+                    }
+                    Swatches(title: "Button colour", selection: $button.fill)
+                    Swatches(title: "Button text colour", selection: $button.ink)
+                    Button("Remove button", role: .destructive) {
+                        let id = button.id
+                        item.buttons.removeAll { $0.id == id }
+                    }
+                }
+            }
+            Section("Buttons: \(item.buttons.count)") {
+                Button("+ Add button") {
+                    var new = PopupButton()
+                    new.title = "Button \(item.buttons.count + 1)"
+                    item.buttons.append(new)
+                }
+                Button("Use OK and Cancel") {
+                    var cancel = PopupButton()
+                    cancel.title = "Cancel"
+                    cancel.fill = 2
+                    item.buttons = [cancel, PopupButton()]
+                }
+                Toggle("Stack buttons vertically", isOn: $item.popupStack)
+                if item.buttons.isEmpty {
+                    Text("With no buttons, tapping outside closes the popup.")
+                        .font(.caption)
+                }
+            }
+            Section("Look") {
+                Picker("Position", selection: $item.popupPlace) {
+                    ForEach(PopupPlace.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                Swatches(title: "Background", selection: $item.popupFill)
+                Swatches(title: "Text colour", selection: $item.popupInk)
+                SliderRow(title: "Corner radius", value: $item.popupRadius, range: 0...50,
+                          unlocked: 0...200)
+                SliderRow(title: "Darken behind", value: $item.popupDim, range: 0...1, step: 0.05)
+                SliderRow(title: "Close by itself after (s, 0 is off)", value: $item.autoClose,
+                          range: 0...20, unlocked: 0...600)
+            }
+        }
+        .navigationTitle("Popup")
+    }
+}
+
+struct InteractionEditor: View {
+    @ObservedObject var model: EditorModel
+    @Binding var item: Interaction
+    var showTrigger = true
+
+    var body: some View {
+        Group {
+            if showTrigger {
+                Picker("Trigger", selection: $item.trigger) {
+                    ForEach(Trigger.allCases) { Text($0.rawValue).tag($0) }
+                }
+                if item.trigger == .delay {
+                    SliderRow(title: "Wait (s)", value: $item.wait, range: 0.1...30, step: 0.1,
+                              unlocked: 0.1...3600)
+                }
             }
             Picker("Action", selection: $item.action) {
                 ForEach(TapAction.allCases) { Text($0.rawValue).tag($0) }
@@ -2018,9 +2320,26 @@ struct InteractionEditor: View {
                 }
             }
         }
+        if item.action == .recolor {
+            Toggle("Change text colour instead", isOn: $item.colorText)
+            Swatches(title: "New colour", selection: $item.color)
+        }
+        if item.action == .setText {
+            TextField("New text", text: $item.newText, axis: .vertical)
+        }
         if item.action == .popup {
-            TextField("Popup title", text: $item.title)
-            TextField("Popup message", text: $item.message, axis: .vertical)
+            NavigationLink("Edit popup (\(item.buttons.count) buttons)") {
+                PopupPage(model: model, item: $item)
+            }
+        }
+        if item.action == .respring {
+            NavigationLink("After respring: \(item.then.first?.action.rawValue ?? "Restart prototype")") {
+                FollowPage(model: model,
+                           item: followUp($item.then, fallback: .restart),
+                           title: "After respring")
+            }
+            Text("Choose Nothing to stay on the same screen.")
+                .font(.caption)
         }
     }
 }
@@ -2173,6 +2492,83 @@ struct RespringOverlay: View {
     }
 }
 
+struct PopupOverlay: View {
+    let item: Interaction
+    let choose: (PopupButton?) -> Void
+
+    private var place: Alignment {
+        switch item.popupPlace {
+        case .top: return .top
+        case .middle: return .center
+        case .bottom: return .bottom
+        }
+    }
+
+    var body: some View {
+        ZStack(alignment: place) {
+            Color.black
+                .opacity(item.popupDim)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if item.buttons.isEmpty { choose(nil) }
+                }
+            card
+                .padding(.horizontal, 30)
+                .padding(.vertical, 60)
+        }
+        .task {
+            guard item.autoClose > 0 else { return }
+            try? await Task.sleep(nanoseconds: UInt64(item.autoClose * 1_000_000_000))
+            if !Task.isCancelled { choose(nil) }
+        }
+    }
+
+    private var card: some View {
+        VStack(spacing: 14) {
+            Text(item.title).font(.headline)
+            if !item.message.isEmpty {
+                Text(item.message)
+                    .font(.subheadline)
+                    .multilineTextAlignment(.center)
+            }
+            if item.popupStack || item.buttons.count > 2 {
+                if item.buttons.count > 6 {
+                    ScrollView { VStack(spacing: 8) { buttonList } }
+                        .frame(maxHeight: 320)
+                } else {
+                    VStack(spacing: 8) { buttonList }
+                }
+            } else if !item.buttons.isEmpty {
+                HStack(spacing: 8) { buttonList }
+            }
+        }
+        .foregroundColor(swatch(item.popupInk))
+        .padding(18)
+        .frame(maxWidth: 320)
+        .background(swatch(item.popupFill))
+        .clipShape(RoundedRectangle(cornerRadius: item.popupRadius, style: .continuous))
+        .shadow(radius: 20)
+    }
+
+    private var buttonList: some View {
+        ForEach(item.buttons) { button in
+            Button {
+                choose(button)
+            } label: {
+                Text(button.title)
+                    .bold()
+                    .foregroundColor(swatch(button.ink))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(swatch(button.fill))
+                    .clipShape(RoundedRectangle(cornerRadius: item.popupRadius / 2,
+                                                style: .continuous))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
 struct PlayerView: View {
     @EnvironmentObject var store: Store
     let project: Project
@@ -2190,6 +2586,13 @@ struct PlayerView: View {
     @State private var replays: [UUID: Int] = [:]
     @State private var visit = 0
     @State private var popup: Interaction?
+    @State private var popupVisit = 0
+    @State private var afterRespring: Interaction?
+    @State private var sliders: [UUID: Double] = [:]
+    @State private var tabChoice: [UUID: Int] = [:]
+    @State private var colors: [UUID: Int] = [:]
+    @State private var inks: [UUID: Int] = [:]
+    @State private var texts: [UUID: String] = [:]
     @State private var stage = RespringStage.idle
     @State private var respringTask: Task<Void, Never>?
     @AppStorage("respringTime") private var respringTime = 2.2
@@ -2222,6 +2625,11 @@ struct PlayerView: View {
                 .blur(radius: receding ? 24 : 0)
                 .scaleEffect(receding ? 0.88 : 1)
                 if hint && showHint { hintView }
+                if let item = popup {
+                    PopupOverlay(item: item, choose: choose)
+                        .id(popupVisit)
+                        .transition(.opacity.combined(with: .scale(scale: 1.05)))
+                }
                 RespringOverlay(stage: stage, unlock: unlock)
                     .allowsHitTesting(stage != .idle)
             }
@@ -2238,14 +2646,6 @@ struct PlayerView: View {
         .onDisappear {
             cancelAll()
             respringTask?.cancel()
-        }
-        .alert(popup?.title ?? "", isPresented: Binding(
-            get: { popup != nil },
-            set: { if !$0 { popup = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(popup?.message ?? "")
         }
         .confirmationDialog("Prototype", isPresented: $menu) {
             Button("Restart") {
@@ -2307,13 +2707,84 @@ struct PlayerView: View {
             .position(x: element.x, y: element.y)
     }
 
+    // The layer as it looks now, after any colour or text changes.
+    private func live(_ element: Element) -> Element {
+        var copy = element
+        if let color = colors[element.id] {
+            copy.fill = color
+            copy.fill2 = nil
+        }
+        if let ink = inks[element.id] { copy.ink = ink }
+        if let text = texts[element.id] { copy.text = text }
+        return copy
+    }
+
     @ViewBuilder private func content(_ element: Element) -> some View {
+        let shown = live(element)
         if element.kind == .console {
-            LiveConsole(element: element,
-                        run: "\(visit)-\(replays[element.id] ?? 0)-\(element.id)")
+            LiveConsole(element: shown,
+                        run: "\(visit)-\(replays[element.id] ?? 0)-\(element.id)-\(shown.text)")
+        } else if element.kind == .slider {
+            ElementView(element: shown, value: sliders[element.id])
+                .overlay(sliderTouch(element))
+        } else if element.kind == .tabs {
+            ElementView(element: shown, selectedTab: selectedTab(element))
+                .overlay(tabTouch(shown))
         } else {
-            ElementView(element: element, progress: progress,
+            ElementView(element: shown, progress: progress,
                         isOn: switches.contains(element.id))
+        }
+    }
+
+    private func sliderTouch(_ element: Element) -> some View {
+        GeometryReader { geo in
+            Color.clear
+                .contentShape(Rectangle())
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { drag in
+                            let travel = max(1, geo.size.width - 28)
+                            let amount = (drag.location.x - 14) / travel
+                            sliders[element.id] = Double(min(1, max(0, amount)))
+                        }
+                        .onEnded { _ in
+                            if (sliders[element.id] ?? 0) >= 0.98 { fire(element, .sliderEnd) }
+                        }
+                )
+        }
+    }
+
+    private func selectedTab(_ element: Element) -> Int {
+        if let match = element.tabTargets.firstIndex(where: { $0 == frame.id }) { return match }
+        return tabChoice[element.id] ?? 0
+    }
+
+    private func tabTouch(_ element: Element) -> some View {
+        let count = element.text.components(separatedBy: "\n").count
+        return HStack(spacing: 0) {
+            ForEach(0..<count, id: \.self) { i in
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { openTab(element, i) }
+            }
+        }
+        .id(count)
+    }
+
+    private func openTab(_ element: Element, _ index: Int) {
+        withAnimation { tabChoice[element.id] = index }
+        fire(element, .tap)
+        if element.tabTargets.indices.contains(index), let target = element.tabTargets[index] {
+            go(Interaction(action: .goTo, screen: target))
+        }
+    }
+
+    private func choose(_ button: PopupButton?) {
+        withAnimation(.easeOut(duration: 0.2)) { popup = nil }
+        if let next = button?.then.first {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                if store.playing != nil { run(next) }
+            }
         }
     }
 
@@ -2366,11 +2837,12 @@ struct PlayerView: View {
         case .back:
             goBack()
         case .popup:
-            popup = item
+            popupVisit += 1
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { popup = item }
         case .load:
             load(item)
         case .respring:
-            respring()
+            respring(then: item.then.first)
         case .show:
             setLayer(item.layer, visible: true)
         case .hide:
@@ -2387,6 +2859,15 @@ struct PlayerView: View {
             }
         case .restart:
             restart()
+        case .recolor:
+            if let id = item.layer {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    if item.colorText { inks[id] = item.color }
+                    else { colors[id] = item.color }
+                }
+            }
+        case .setText:
+            if let id = item.layer { texts[id] = item.newText }
         }
     }
 
@@ -2447,9 +2928,11 @@ struct PlayerView: View {
         stage == .shrink || stage == .black
     }
 
-    private func respring() {
+    private func respring(then next: Interaction?) {
         guard stage == .idle else { return }
         cancelAll()
+        popup = nil
+        afterRespring = next
         respringTask = Task { @MainActor in
             withAnimation(.easeIn(duration: 0.4)) { stage = .shrink }
             try? await Task.sleep(nanoseconds: 450_000_000)
@@ -2467,8 +2950,17 @@ struct PlayerView: View {
     }
 
     private func unlock() {
-        restart()
+        let next = afterRespring
+        afterRespring = nil
+        if next == nil || next?.action == .restart {
+            restart()
+        } else {
+            schedule()
+        }
         withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) { stage = .idle }
+        if let next = next, next.action != .restart {
+            DispatchQueue.main.async { run(next) }
+        }
     }
 
     private func cancelAll() {
@@ -2483,6 +2975,12 @@ struct PlayerView: View {
         switches = []
         visibility = [:]
         replays = [:]
+        sliders = [:]
+        tabChoice = [:]
+        colors = [:]
+        inks = [:]
+        texts = [:]
+        popup = nil
         progress = 0
         transition = .instant
         layer = UUID()
