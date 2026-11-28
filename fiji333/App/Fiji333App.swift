@@ -54,6 +54,22 @@ enum Kind: String, Codable, CaseIterable, Identifiable {
     case clock = "Live Clock"
     case spinner = "Spinner"
     case ring = "Progress Ring"
+    case appIcon = "App Icon"
+    case statusBar = "OS Status Bar"
+    case homeBar = "Home Bar"
+    case notification = "Notification"
+    case widget = "Date Widget"
+    case calculator = "Calculator"
+    case notes = "Notes Pad"
+    case window = "Window"
+    case shell = "Typing Terminal"
+    case panel = "Taskbar / Panel"
+
+    static let pcParts: [Kind] = [.window, .shell, .panel]
+
+    static let osParts: [Kind] = [
+        .appIcon, .statusBar, .homeBar, .notification, .widget, .calculator, .notes
+    ]
     var id: String { rawValue }
 }
 
@@ -90,6 +106,7 @@ enum TapAction: String, Codable, CaseIterable, Identifiable {
     case burst = "Confetti burst"
     case particles = "Start / stop particles"
     case sound = "Play sound"
+    case home = "Go to home screen"
     var id: String { rawValue }
 
     var needsScreen: Bool { self == .goTo || self == .load }
@@ -343,6 +360,18 @@ struct Interaction: Codable, Identifiable, Equatable {
         case autoClose, color, colorText, newText, then, style, sound
     }
 
+    // Points every nested action at new screen and layer ids after a merge.
+    mutating func relink(layers: [UUID: UUID], screens: [UUID: UUID]) {
+        if let old = layer { layer = layers[old] ?? old }
+        if let old = screen { screen = screens[old] ?? old }
+        for i in then.indices { then[i].relink(layers: layers, screens: screens) }
+        for i in buttons.indices {
+            for j in buttons[i].then.indices {
+                buttons[i].then[j].relink(layers: layers, screens: screens)
+            }
+        }
+    }
+
     // Points follow-up actions at the new layers when a screen is duplicated.
     mutating func remap(_ ids: [UUID: UUID]) {
         if let old = layer { layer = ids[old] ?? old }
@@ -432,6 +461,10 @@ struct Element: Codable, Identifiable, Equatable {
     var radial = false
     var effect: EffectKind = .none
     var effectSpeed: Double = 1
+    var parent: UUID?
+    var commands = ""
+    var prompt = "$"
+    var mono = false
 
     // Gradient colours after the main fill. Older designs only stored fill2.
     var moreColors: [Int] { extra ?? fill2.map { [$0] } ?? [] }
@@ -445,6 +478,7 @@ struct Element: Codable, Identifiable, Equatable {
         case consoleSpeed, consoleWait, consoleLoop, consoleScroll
         case value, showValue, tabTargets
         case extra, angle, radial, effect, effectSpeed
+        case parent, commands, prompt, mono
     }
 }
 
@@ -501,6 +535,10 @@ extension Element {
         radial = read(.radial, radial)
         effect = read(.effect, effect)
         effectSpeed = read(.effectSpeed, effectSpeed)
+        parent = try? c.decode(UUID.self, forKey: .parent)
+        commands = read(.commands, commands)
+        prompt = read(.prompt, prompt)
+        mono = read(.mono, mono)
 
         if !c.contains(.interactions) {
             let old = try decoder.container(keyedBy: OldKeys.self)
@@ -527,6 +565,17 @@ struct Frame: Codable, Identifiable, Equatable {
     var particles: [Particles]?
     var rainbow: Bool?
     var rainbowSpeed: Double?
+    var isHome: Bool?
+    var width: Double?
+    var height: Double?
+
+    // Screens without a stored size are phone sized.
+    var size: CGSize {
+        CGSize(width: max(100, width ?? Double(canvasSize.width)),
+               height: max(100, height ?? Double(canvasSize.height)))
+    }
+    var w: Double { Double(size.width) }
+    var h: Double { Double(size.height) }
 }
 
 struct Project: Codable, Identifiable, Equatable {
@@ -549,6 +598,32 @@ func makeElement(_ kind: Kind) -> Element {
     case .clock: e.w = 340; e.h = 100; e.fill = noColor; e.fontSize = 72; e.y = 180
     case .spinner: e.w = 80; e.h = 80; e.fill = 10
     case .ring: e.w = 160; e.h = 160; e.fill = 8; e.fontSize = 28
+    case .appIcon:
+        e.text = "App"; e.w = 74; e.h = 94; e.radius = 18; e.fontSize = 13
+    case .statusBar:
+        e.text = "TrollNet"; e.w = 370; e.h = 28; e.y = 22; e.fill = noColor
+        e.fontSize = 15; e.value = 0.8
+    case .homeBar:
+        e.w = 150; e.h = 28; e.y = 826; e.fill = 4
+        var swipe = Interaction(action: .home)
+        swipe.trigger = .swipeUp
+        e.interactions = [swipe, Interaction(action: .home)]
+    case .notification:
+        e.text = "Messages\nYou have been trolled."; e.w = 360; e.h = 84; e.y = 110
+        e.fill = 2; e.radius = 22; e.fontSize = 15
+    case .widget:
+        e.w = 170; e.h = 170; e.fill = 1; e.radius = 28; e.fontSize = 56
+    case .window:
+        e.text = "Window"; e.w = 460; e.h = 300; e.fill = 1; e.radius = 10; e.fontSize = 15
+    case .shell:
+        e.text = "Type help and press return"; e.w = 440; e.h = 260; e.fill = 0; e.ink = 8
+        e.radius = 6; e.fontSize = 14; e.prompt = "$"
+    case .panel:
+        e.text = "Menu\nFiles\nTerminal"; e.w = 390; e.h = 40; e.fill = 1; e.radius = 0
+        e.fontSize = 15
+    case .calculator: e.w = 340; e.h = 460; e.fill = 1; e.radius = 24; e.fontSize = 28
+    case .notes:
+        e.text = "Write something..."; e.w = 350; e.h = 460; e.fill = 1; e.fontSize = 17
     case .slider: e.w = 300; e.h = 60; e.fill = 10; e.fontSize = 15
     case .tabs:
         e.text = "Home\nTweaks\nSettings"
@@ -556,6 +631,23 @@ func makeElement(_ kind: Kind) -> Element {
     case .console:
         e.text = "[*] starting\n[+] loading modules\n[+] applying tweaks\n[*] done"
         e.w = 350; e.h = 260; e.fill = 1; e.ink = 8; e.fontSize = 13
+    }
+    return e
+}
+
+// Fits a new layer to the size of the screen it is added to.
+func fitted(_ element: Element, on screen: Frame) -> Element {
+    var e = element
+    e.x = screen.w / 2
+    e.y = screen.h / 2
+    e.w = min(e.w, screen.w)
+    e.h = min(e.h, screen.h)
+    switch e.kind {
+    case .statusBar: e.y = 22; e.w = screen.w - 20
+    case .homeBar: e.y = screen.h - 18
+    case .panel: e.w = screen.w; e.y = screen.h - e.h / 2
+    case .tabs: e.y = screen.h - 64
+    default: break
     }
     return e
 }
@@ -1027,6 +1119,12 @@ struct HomeView: View {
                 }
                 Section("New file") {
                     Button("Blank design") { create(Templates.blank()) }
+                    Button("Blank PC design") {
+                        var screen = Frame(name: "Desktop")
+                        screen.width = 960
+                        screen.height = 540
+                        create(Project(name: "My PC OS", frames: [screen]))
+                    }
                     Button("Template: Jailbreak Starter") { create(Templates.jailbreak()) }
                     Button("Template: Hacker Console") { create(Templates.terminal()) }
                     Button("Template: Rainbow Party") { create(Templates.party()) }
@@ -1050,6 +1148,10 @@ struct HomeView: View {
                     }
                     Button("Save all designs to Files") { saveAll() }
                     NavigationLink("Restore a backup") { BackupsView() }
+                }
+                Section("Make an OS") {
+                    Button("Template: TrollOS") { create(OSKit.trollOS()) }
+                    Button("Blank OS (boot, lock, home)") { create(OSKit.blankOS()) }
                 }
                 Section("Your files") {
                     if store.projects.isEmpty {
@@ -1213,6 +1315,7 @@ func makePaint(_ colors: [Int], angle: Double, radial: Bool, reach: Double) -> A
 
 struct Backdrop: View {
     let screen: Frame
+    var animated = true
 
     private var colors: [Int] {
         let all = [screen.fill] + (screen.extra ?? [])
@@ -1220,7 +1323,7 @@ struct Backdrop: View {
     }
 
     var body: some View {
-        if screen.rainbow ?? false {
+        if animated && (screen.rainbow ?? false) {
             TimelineView(.animation) { context in
                 let speed = screen.rainbowSpeed ?? 1
                 let t = context.date.timeIntervalSinceReferenceDate * speed
@@ -1313,7 +1416,7 @@ struct Effects: ViewModifier {
         if element.effect == .none || !active {
             content
         } else {
-            TimelineView(.animation) { context in
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
                 apply(content, context.date.timeIntervalSinceReferenceDate * element.effectSpeed)
             }
         }
@@ -1400,7 +1503,7 @@ struct ParticleField: View {
     let systems: [Particles]
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
             Canvas { context, size in
                 let time = timeline.date.timeIntervalSinceReferenceDate
                     .truncatingRemainder(dividingBy: 100_000)
@@ -1520,15 +1623,16 @@ struct SpinnerLook: View {
 
 struct ScreenPicture: View {
     let frame: Frame
+    var animated = true
     var body: some View {
         ZStack {
-            Backdrop(screen: frame)
+            Backdrop(screen: frame, animated: animated)
             ForEach(frame.elements.filter { !$0.hidden }) { element in
                 ElementView(element: element)
                     .position(x: element.x, y: element.y)
             }
         }
-        .frame(width: canvasSize.width, height: canvasSize.height)
+        .frame(width: frame.size.width, height: frame.size.height)
         .clipped()
     }
 }
@@ -1661,7 +1765,7 @@ struct ArrangeView: View {
                 }
                 .disabled(picked.count < 2)
                 Section("Align") {
-                    Button("Centre on screen across") { apply { $0.x = 195 } }
+                    Button("Centre on screen across") { apply { $0.x = model.frame.w / 2 } }
                     Button("Centre on screen down") { centreDown() }
                     Button("Align left edges") { alignLeft() }
                     Button("Align top edges") { alignTop() }
@@ -1724,7 +1828,7 @@ struct ArrangeView: View {
         let cellW = items.map { $0.w }.max() ?? 0
         let cellH = items.map { $0.h }.max() ?? 0
         let total = Double(columns) * cellW + Double(columns - 1) * gap
-        let left = 195 - total / 2
+        let left = model.frame.w / 2 - total / 2
         let top = items.map { $0.y - $0.h / 2 }.min() ?? 0
         for i in items.indices {
             let column = Double(i % columns)
@@ -1752,7 +1856,7 @@ struct ArrangeView: View {
         var items = chosen
         let top = items.map { $0.y - $0.h / 2 }.min() ?? 0
         let bottom = items.map { $0.y + $0.h / 2 }.max() ?? 0
-        let move = 422 - (top + bottom) / 2
+        let move = model.frame.h / 2 - (top + bottom) / 2
         for i in items.indices { items[i].y += move }
         place(items)
     }
@@ -1790,9 +1894,10 @@ struct ArrangeView: View {
 struct Thumbnail: View {
     let frame: Frame
     var body: some View {
-        ScreenPicture(frame: frame)
-            .scaleEffect(0.12)
-            .frame(width: canvasSize.width * 0.12, height: canvasSize.height * 0.12)
+        let scale = 100 / max(frame.size.width, frame.size.height)
+        return ScreenPicture(frame: frame, animated: false)
+            .scaleEffect(scale)
+            .frame(width: frame.size.width * scale, height: frame.size.height * scale)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray))
             .allowsHitTesting(false)
@@ -1831,7 +1936,8 @@ struct ElementView: View {
     private var font: Font {
         let weights: [Font.Weight] = [.light, .regular, .semibold, .black]
         let index = min(max(element.weight, 0), 3)
-        return .system(size: element.fontSize, weight: weights[index], design: .rounded)
+        return .system(size: element.fontSize, weight: weights[index],
+                       design: element.mono ? .monospaced : .rounded)
     }
 
     private var textAlignment: TextAlignment {
@@ -1951,6 +2057,10 @@ struct ElementView: View {
             SpinnerLook(paint: paint, thickness: max(2, min(element.w, element.h) * 0.1))
         case .ring:
             ringLook
+        case .appIcon, .statusBar, .homeBar, .notification, .widget, .calculator, .notes:
+            OSPartView(element: element, paint: paint, font: font)
+        case .window, .shell, .panel:
+            PCPartView(element: element, paint: paint, font: font, selectedTab: selectedTab)
         case .text, .button:
             Text(element.text)
                 .font(font)
@@ -2015,6 +2125,525 @@ struct ElementView: View {
             shown = Array(shown.suffix(fits))
         }
         return shown.joined(separator: "\n")
+    }
+}
+
+// MARK: - OS parts
+
+struct OSPartView: View {
+    let element: Element
+    let paint: AnyShapeStyle
+    let font: Font
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: element.radius, style: .continuous)
+    }
+
+    private var ink: Color { swatch(element.ink) }
+
+    private var lines: [String] { element.text.components(separatedBy: "\n") }
+
+    var body: some View {
+        switch element.kind {
+        case .appIcon: appIcon
+        case .statusBar: statusBar
+        case .homeBar:
+            Capsule()
+                .fill(paint)
+                .frame(height: 5)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .notification: notification
+        case .widget: widget
+        case .calculator:
+            CalculatorPad(element: element)
+        case .notes:
+            Text(element.text)
+                .font(font)
+                .foregroundColor(ink)
+                .padding(14)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(shape.fill(paint))
+        default:
+            EmptyView()
+        }
+    }
+
+    private var appIcon: some View {
+        let side = max(8, min(element.w, element.h - element.fontSize - 6))
+        return VStack(spacing: 5) {
+            ZStack {
+                shape.fill(paint)
+                if let data = element.image, let image = cachedImage(data) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: element.imageFit ? .fit : .fill)
+                        .frame(width: side, height: side)
+                        .clipShape(shape)
+                } else {
+                    Text(String(element.text.prefix(2)))
+                        .font(.system(size: side * 0.36, weight: .bold, design: .rounded))
+                        .foregroundColor(ink)
+                }
+            }
+            .frame(width: side, height: side)
+            Text(element.text)
+                .font(font)
+                .foregroundColor(ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+    }
+
+    private var statusBar: some View {
+        let level = min(1, max(0, element.value))
+        return HStack(spacing: 8) {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(context.date, format: .dateTime.hour().minute())
+            }
+            Spacer()
+            Text(element.text).lineLimit(1)
+            Text("\(Int((level * 100).rounded()))%")
+            RoundedRectangle(cornerRadius: 3)
+                .stroke(ink.opacity(0.6))
+                .frame(width: 26, height: 12)
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(level < 0.2 ? Color.red : ink)
+                        .frame(width: 22 * level, height: 8)
+                        .padding(.leading, 2)
+                }
+        }
+        .font(font)
+        .foregroundColor(ink)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(shape.fill(paint))
+    }
+
+    private var notification: some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 9)
+                .fill(Color.green)
+                .frame(width: 40, height: 40)
+                .overlay(Text(String(element.text.prefix(1))).bold().foregroundColor(.white))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(lines.first ?? "").bold()
+                Text(lines.dropFirst().joined(separator: "\n"))
+            }
+            Spacer()
+        }
+        .font(font)
+        .foregroundColor(ink)
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(shape.fill(paint))
+    }
+
+    private var widget: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            VStack {
+                Text(context.date, format: .dateTime.weekday(.wide))
+                    .font(.system(size: element.fontSize * 0.32, weight: .bold))
+                    .foregroundColor(.red)
+                Text(context.date, format: .dateTime.day())
+                    .font(font)
+                    .foregroundColor(ink)
+                Text(context.date, format: .dateTime.month(.wide))
+                    .font(.system(size: element.fontSize * 0.28))
+                    .foregroundColor(ink)
+            }
+            .minimumScaleFactor(0.4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(shape.fill(paint))
+        }
+    }
+}
+
+struct CalculatorPad: View {
+    let element: Element
+    @State private var display = "0"
+    @State private var stored = 0.0
+    @State private var operation = ""
+    @State private var fresh = true
+
+    private let rows = [["7", "8", "9", "/"], ["4", "5", "6", "x"],
+                        ["1", "2", "3", "-"], ["C", "0", "=", "+"]]
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text(display)
+                .font(.system(size: element.fontSize * 1.6, weight: .light))
+                .lineLimit(1)
+                .minimumScaleFactor(0.3)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            ForEach(rows, id: \.self) { row in
+                HStack(spacing: 8) {
+                    ForEach(row, id: \.self) { key in
+                        keyButton(key)
+                    }
+                }
+            }
+        }
+        .foregroundColor(swatch(element.ink))
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: element.radius, style: .continuous)
+                .fill(swatch(element.fill))
+        )
+    }
+
+    private func keyButton(_ key: String) -> some View {
+        Button {
+            press(key)
+        } label: {
+            Text(key)
+                .font(.system(size: element.fontSize, weight: .semibold))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Int(key) == nil ? Color.orange : Color.white.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func press(_ key: String) {
+        if Int(key) != nil {
+            if fresh { display = key; fresh = false }
+            else if display.count < 12 { display += key }
+        } else if key == "C" {
+            display = "0"; stored = 0; operation = ""; fresh = true
+        } else {
+            let current = Double(display) ?? 0
+            if !operation.isEmpty && !fresh {
+                var result = current
+                if operation == "+" { result = stored + current }
+                if operation == "-" { result = stored - current }
+                if operation == "x" { result = stored * current }
+                if operation == "/" { result = current == 0 ? 0 : stored / current }
+                display = String(format: "%.10g", result)
+                stored = result
+            } else {
+                stored = current
+            }
+            operation = key == "=" ? "" : key
+            fresh = true
+        }
+    }
+}
+
+// A notes box that remembers what was typed during prototypes.
+struct NotesPad: View {
+    let element: Element
+    @AppStorage private var note: String
+
+    init(element: Element) {
+        self.element = element
+        _note = AppStorage(wrappedValue: element.text, "note-" + element.link.uuidString)
+    }
+
+    var body: some View {
+        TextEditor(text: $note)
+            .scrollContentBackground(.hidden)
+            .font(.system(size: element.fontSize))
+            .foregroundColor(swatch(element.ink))
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: element.radius, style: .continuous)
+                    .fill(swatch(element.fill))
+            )
+            .frame(width: element.w, height: element.h)
+            .opacity(element.opacity)
+            .rotationEffect(.degrees(element.rotation))
+    }
+}
+
+// MARK: - PC parts
+
+let titleBarHeight: Double = 32
+
+struct PCPartView: View {
+    let element: Element
+    let paint: AnyShapeStyle
+    let font: Font
+    var selectedTab = 0
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: element.radius, style: .continuous)
+    }
+
+    private var ink: Color { swatch(element.ink) }
+
+    var body: some View {
+        switch element.kind {
+        case .window: window
+        case .shell: shellPreview
+        case .panel: panel
+        default: EmptyView()
+        }
+    }
+
+    private var window: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Text(element.text).font(font).lineLimit(1)
+                Spacer()
+                Text("-").bold().frame(width: 24, height: 22)
+                    .background(Color.white.opacity(0.18))
+                Text("x").bold().frame(width: 24, height: 22)
+                    .background(Color.red.opacity(0.85))
+            }
+            .foregroundColor(ink)
+            .padding(.horizontal, 8)
+            .frame(height: titleBarHeight)
+            .background(Color.white.opacity(0.14))
+            Spacer(minLength: 0)
+        }
+        .background(Rectangle().fill(paint))
+        .clipShape(shape)
+        .overlay(shape.stroke(Color.white.opacity(0.25)))
+    }
+
+    private var shellPreview: some View {
+        Text(element.text + "\n" + element.prompt + " _")
+            .font(.system(size: element.fontSize, design: .monospaced))
+            .foregroundColor(ink)
+            .padding(10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(shape.fill(paint))
+            .clipped()
+    }
+
+    private var panel: some View {
+        let names = element.text.components(separatedBy: "\n")
+        return HStack(spacing: 6) {
+            ForEach(names.indices, id: \.self) { i in
+                Text(names[i])
+                    .lineLimit(1)
+                    .frame(width: panelButtonWidth(element))
+                    .frame(maxHeight: .infinity)
+                    .background(Color.white.opacity(0.12))
+            }
+            Spacer(minLength: 0)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(context.date, format: .dateTime.hour().minute())
+            }
+        }
+        .font(font)
+        .foregroundColor(ink)
+        .padding(4)
+        .background(shape.fill(paint))
+    }
+}
+
+func panelButtonWidth(_ element: Element) -> Double {
+    let count = max(1, element.text.components(separatedBy: "\n").count)
+    return max(20, min(110, (element.w - 90) / Double(count) - 6))
+}
+
+// A terminal that answers the commands written in the editor.
+struct ShellView: View {
+    let element: Element
+    let open: (String) -> Void
+    @State private var log: [String] = []
+    @State private var input = ""
+
+    // Each line is "command=answer" or "command>screen or layer name".
+    private var custom: [(name: String, mark: Character, value: String)] {
+        element.commands.components(separatedBy: "\n").compactMap {
+            line -> (name: String, mark: Character, value: String)? in
+            guard let cut = line.firstIndex(where: { $0 == "=" || $0 == ">" }) else { return nil }
+            let name = line[..<cut].trimmingCharacters(in: .whitespaces)
+            let value = String(line[line.index(after: cut)...])
+                .trimmingCharacters(in: .whitespaces)
+            return name.isEmpty ? nil : (name, line[cut], value)
+        }
+    }
+
+    var body: some View {
+        ScrollViewReader { reader in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(([element.text] + log).joined(separator: "\n"))
+                    HStack(spacing: 6) {
+                        Text(element.prompt)
+                        TextField("", text: $input)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .onSubmit(run)
+                    }
+                    .id("input")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+            }
+            .onChange(of: log.count) { _ in reader.scrollTo("input", anchor: .bottom) }
+        }
+        .font(.system(size: element.fontSize, design: .monospaced))
+        .foregroundColor(swatch(element.ink))
+        .frame(width: element.w, height: element.h)
+        .background(swatch(element.fill))
+        .clipShape(RoundedRectangle(cornerRadius: element.radius, style: .continuous))
+        .opacity(element.opacity)
+    }
+
+    private func run() {
+        let typed = input.trimmingCharacters(in: .whitespaces)
+        input = ""
+        guard !typed.isEmpty else { return }
+        log.append(element.prompt + " " + typed)
+        if let match = custom.first(where: { $0.name.lowercased() == typed.lowercased() }) {
+            if match.mark == ">" {
+                open(match.value)
+            } else {
+                log.append(match.value.replacingOccurrences(of: "\\n", with: "\n"))
+            }
+        } else if typed == "clear" {
+            log = []
+        } else if typed == "help" {
+            log.append((["help", "clear", "echo"] + custom.map { $0.name })
+                .joined(separator: "  "))
+        } else if typed.hasPrefix("echo ") {
+            log.append(String(typed.dropFirst(5)))
+        } else {
+            log.append(typed + ": command not found")
+        }
+        if log.count > 200 { log.removeFirst(log.count - 200) }
+    }
+}
+
+// MARK: - OS builder
+
+enum OSKit {
+    static func part(_ kind: Kind, _ text: String = "", x: Double = 195,
+                     y: Double, fill: Int? = nil) -> Element {
+        var e = makeElement(kind)
+        if !text.isEmpty { e.text = text }
+        e.x = x
+        e.y = y
+        if let fill = fill { e.fill = fill }
+        return e
+    }
+
+    static func screen(_ name: String, colors: [Int] = [24, 25]) -> Frame {
+        var frame = Frame(name: name)
+        frame.fill = colors.first ?? 0
+        frame.extra = Array(colors.dropFirst())
+        return frame
+    }
+
+    static func boot(_ osName: String, next: UUID?) -> Frame {
+        var frame = screen("Boot", colors: [0])
+        var title = part(.text, osName, y: 340)
+        title.w = 370; title.fontSize = 52; title.motion = .pop
+        var spinner = part(.spinner, y: 500, fill: 4)
+        spinner.w = 44; spinner.h = 44
+        var wait = Interaction(action: next == nil ? .home : .goTo, screen: next)
+        wait.trigger = .delay
+        wait.wait = 2.5
+        spinner.interactions = [wait]
+        frame.elements = [title, spinner]
+        return frame
+    }
+
+    static func lock() -> Frame {
+        var frame = screen("Lock")
+        var touch = part(.rect, y: 422, fill: noColor)
+        touch.w = 390; touch.h = 844; touch.radius = 0; touch.name = "Swipe area"
+        var swipe = Interaction(action: .home)
+        swipe.trigger = .swipeUp
+        swipe.transition = .slideUp
+        touch.interactions = [swipe]
+        var hint = part(.text, "Swipe up to unlock", y: 770)
+        hint.w = 300; hint.fontSize = 17; hint.effect = .breathe
+        hint.interactions = [swipe]
+        let clock = part(.clock, y: 200)
+        frame.elements = [touch, part(.statusBar, y: 22), clock, hint]
+        return frame
+    }
+
+    // Each app is a name, a colour and the screen it opens.
+    static func homeScreen(apps: [(String, Int, UUID?)]) -> Frame {
+        var frame = screen("Home")
+        frame.isHome = true
+        var items = [part(.statusBar, y: 22)]
+        for (index, app) in apps.enumerated() {
+            let column = Double(index % 4)
+            let row = Double(index / 4)
+            var icon = part(.appIcon, app.0, x: 60 + column * 90, y: 120 + row * 110,
+                            fill: app.1)
+            if let target = app.2 {
+                var open = Interaction(action: .goTo, screen: target)
+                open.transition = .zoom
+                icon.interactions = [open]
+            }
+            items.append(icon)
+        }
+        var dock = part(.rect, y: 740, fill: 30)
+        dock.w = 360; dock.h = 100; dock.radius = 32; dock.name = "Dock"
+        items.append(dock)
+        items.append(part(.homeBar, y: 826))
+        frame.elements = items
+        return frame
+    }
+
+    static func appScreen(_ title: String, content: [Element]) -> Frame {
+        var frame = screen(title, colors: [0])
+        var heading = part(.text, title, y: 90)
+        heading.w = 350; heading.fontSize = 34; heading.align = 0
+        frame.elements = [part(.statusBar, y: 22), heading] + content
+            + [part(.homeBar, y: 826)]
+        return frame
+    }
+
+    static func settingsScreen() -> Frame {
+        var about = part(.row, "About", y: 170)
+        about.interactions = [Interaction(action: .popup, title: "About",
+                                          message: "Version 3.33")]
+        var update = part(.row, "Software Update", y: 232)
+        update.interactions = [Interaction(action: .popup, title: "Up to date",
+                                           message: "No updates found.")]
+        let wifi = part(.toggle, "Wi-Fi", y: 294)
+        let dark = part(.toggle, "Dark Mode", y: 356)
+        let bright = part(.slider, y: 440)
+        return appScreen("Settings", content: [about, update, wifi, dark, bright])
+    }
+
+    static func blankOS() -> Project {
+        let home = homeScreen(apps: [])
+        let lockFrame = lock()
+        let start = boot("MyOS", next: lockFrame.id)
+        return Project(name: "My OS", frames: [start, lockFrame, home])
+    }
+
+    static func trollOS() -> Project {
+        let settings = settingsScreen()
+        let notes = appScreen("Notes", content: [part(.notes, y: 380)])
+        let calc = appScreen("Calculator", content: [part(.calculator, y: 480)])
+        var log = part(.console, y: 400)
+        log.h = 480
+        let terminal = appScreen("Terminal", content: [log])
+        var jailbroken = part(.text, "Not jailbroken", y: 200)
+        jailbroken.w = 340
+        let ring = part(.ring, y: 390)
+        var go = part(.button, "Jailbreak", y: 600)
+        go.w = 260
+        var respring = Interaction(action: .respring)
+        respring.trigger = .tap
+        var change = Interaction(action: .setText, layer: jailbroken.id)
+        change.newText = "Jailbreaking..."
+        go.interactions = [change, Interaction(action: .load)]
+        var spring = part(.button, "Respring", y: 680, fill: 2)
+        spring.w = 260
+        spring.interactions = [respring]
+        let jail = appScreen("fiji333", content: [jailbroken, ring, go, spring])
+        let home = homeScreen(apps: [
+            ("Settings", 3, settings.id), ("Notes", 7, notes.id),
+            ("Calc", 6, calc.id), ("Terminal", 1, terminal.id), ("fiji333", 9, jail.id)
+        ])
+        let lockFrame = lock()
+        let start = boot("TrollOS", next: lockFrame.id)
+        return Project(name: "TrollOS",
+                       frames: [start, lockFrame, home, settings, notes, calc, terminal, jail])
     }
 }
 
@@ -2174,7 +2803,7 @@ final class EditorModel: ObservableObject {
 
     func add(_ kind: Kind) {
         checkpoint()
-        let new = makeElement(kind)
+        let new = fitted(makeElement(kind), on: frame)
         frame.elements.append(new)
         selected = new.id
     }
@@ -2213,9 +2842,10 @@ final class EditorModel: ObservableObject {
         guard let result = prepareImage(data) else { return }
         checkpoint()
         var new = makeElement(.image)
+        new = fitted(new, on: frame)
         new.image = result.data
-        new.w = 280
-        new.h = min(700, 280 * Double(result.size.height / result.size.width))
+        new.w = min(280, frame.w)
+        new.h = min(frame.h, new.w * Double(result.size.height / result.size.width))
         frame.elements.append(new)
         selected = new.id
     }
@@ -2224,6 +2854,9 @@ final class EditorModel: ObservableObject {
         guard let id = selected else { return }
         checkpoint()
         frame.elements.removeAll { $0.id == id }
+        for i in frame.elements.indices where frame.elements[i].parent == id {
+            frame.elements[i].parent = nil
+        }
         selected = nil
     }
 
@@ -2235,10 +2868,106 @@ final class EditorModel: ObservableObject {
         else { frame.elements.insert(item, at: 0) }
     }
 
+    func append(_ new: Frame) {
+        checkpoint()
+        var screen = new
+        // Keep only one home screen.
+        if project.frames.contains(where: { $0.isHome == true }) { screen.isHome = nil }
+        project.frames.append(screen)
+        frameIndex = project.frames.count - 1
+        selected = nil
+    }
+
+    // Copies every screen of another design into this one and keeps its links working.
+    func merge(_ other: Project) {
+        checkpoint()
+        var screens: [UUID: UUID] = [:]
+        var layers: [UUID: UUID] = [:]
+        var incoming = other.frames
+        for i in incoming.indices {
+            let fresh = UUID()
+            screens[incoming[i].id] = fresh
+            incoming[i].id = fresh
+            for j in incoming[i].elements.indices {
+                let layer = UUID()
+                layers[incoming[i].elements[j].id] = layer
+                incoming[i].elements[j].id = layer
+                incoming[i].elements[j].link = UUID()
+            }
+        }
+        let hasHome = project.frames.contains { $0.isHome == true }
+        let names = Set(project.frames.map { $0.name })
+        for i in incoming.indices {
+            if hasHome { incoming[i].isHome = nil }
+            if names.contains(incoming[i].name) {
+                incoming[i].name += " (" + other.name + ")"
+            }
+            for j in incoming[i].elements.indices {
+                for k in incoming[i].elements[j].interactions.indices {
+                    incoming[i].elements[j].interactions[k]
+                        .relink(layers: layers, screens: screens)
+                }
+                incoming[i].elements[j].tabTargets = incoming[i].elements[j].tabTargets.map {
+                    target in target.map { screens[$0] ?? layers[$0] ?? $0 }
+                }
+                if let old = incoming[i].elements[j].parent {
+                    incoming[i].elements[j].parent = layers[old]
+                }
+            }
+        }
+        let first = project.frames.count
+        project.frames += incoming
+        frameIndex = min(first, project.frames.count - 1)
+        selected = nil
+    }
+
+    func addSized(_ width: Double, _ height: Double) {
+        addFrame(copying: false)
+        frame.width = width
+        frame.height = height
+    }
+
+    // Changes the screen size and keeps layers in the same relative places.
+    func resize(_ width: Double, _ height: Double) {
+        let sx = width / frame.w
+        let sy = height / frame.h
+        var screen = frame
+        for i in screen.elements.indices {
+            let old = screen.elements[i]
+            let fill = old.w >= screen.w && old.h >= screen.h
+            screen.elements[i].x = old.x * sx
+            screen.elements[i].y = old.y * sy
+            screen.elements[i].w = fill ? width : min(old.w, width)
+            screen.elements[i].h = fill ? height : min(old.h, height)
+        }
+        screen.width = width
+        screen.height = height
+        frame = screen
+    }
+
+    func moveFrame(to target: Int) {
+        guard project.frames.indices.contains(target), target != frameIndex else { return }
+        checkpoint()
+        let moving = project.frames.remove(at: frameIndex)
+        project.frames.insert(moving, at: target)
+        frameIndex = target
+    }
+
+    func setHome(_ on: Bool) {
+        let current = frame.id
+        for i in project.frames.indices {
+            if project.frames[i].id == current { project.frames[i].isHome = on ? true : nil }
+            else if on { project.frames[i].isHome = nil }
+        }
+    }
+
     func addFrame(copying: Bool) {
         checkpoint()
         var new = copying ? frame : Frame(name: "")
+        new.width = frame.width
+        new.height = frame.height
         new.id = UUID()
+        new.isHome = nil
         new.name = "Screen \(project.frames.count + 1)"
         if copying {
             var ids: [UUID: UUID] = [:]
@@ -2248,6 +2977,10 @@ final class EditorModel: ObservableObject {
                 new.elements[i].id = fresh
             }
             for i in new.elements.indices {
+                if let old = new.elements[i].parent { new.elements[i].parent = ids[old] }
+                new.elements[i].tabTargets = new.elements[i].tabTargets.map {
+                    target in target.map { ids[$0] ?? $0 }
+                }
                 for j in new.elements[i].interactions.indices {
                     new.elements[i].interactions[j].remap(ids)
                 }
@@ -2381,7 +3114,7 @@ struct EditorView: View {
                     .buttonStyle(.bordered)
                     .tint(index == model.frameIndex ? .blue : .gray)
                 }
-                Button("+ Screen") { model.addFrame(copying: false) }
+                addScreenMenu
             }
             .font(.caption)
             .padding(.horizontal)
@@ -2410,6 +3143,42 @@ struct EditorView: View {
         }
     }
 
+    private var addScreenMenu: some View {
+        Menu("+ Screen") {
+            Button("Blank screen") { model.addFrame(copying: false) }
+            Button("Blank phone screen") { model.addSized(390, 844) }
+            Button("Blank PC screen") { model.addSized(960, 540) }
+            Menu("OS screens") {
+                Button("Boot screen") { model.append(OSKit.boot(model.project.name, next: nil)) }
+                Button("Lock screen") { model.append(OSKit.lock()) }
+                Button("Home screen") { model.append(OSKit.homeScreen(apps: [])) }
+                Button("Settings app") { model.append(OSKit.settingsScreen()) }
+                Button("Empty app") { model.append(OSKit.appScreen("App", content: [])) }
+                Button("Notes app") {
+                    model.append(OSKit.appScreen("Notes",
+                                                 content: [OSKit.part(.notes, y: 380)]))
+                }
+                Button("Calculator app") {
+                    model.append(OSKit.appScreen("Calculator",
+                                                 content: [OSKit.part(.calculator, y: 480)]))
+                }
+            }
+            Menu("Merge a design") {
+                ForEach(store.projects.filter { $0.id != model.project.id }) { other in
+                    Button(other.name) { model.merge(other) }
+                }
+                Button("From a file") {
+                    FilePicker.open([.json, .text, .data]) { data in
+                        if let other = try? JSONDecoder().decode(Project.self, from: data),
+                           !other.frames.isEmpty {
+                            model.merge(other)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var selectionBar: some View {
         HStack {
             Button("Edit") { model.checkpoint(); panel = .design }
@@ -2432,8 +3201,21 @@ struct EditorView: View {
     private var bottomBar: some View {
         HStack {
             Menu("+ Insert") {
-                ForEach(Kind.allCases.filter { $0 != .image }) { kind in
+                ForEach(Kind.allCases.filter {
+                    $0 != .image && !Kind.osParts.contains($0) && !Kind.pcParts.contains($0)
+                }) { kind in
                     Button(kind.rawValue) { model.add(kind) }
+                }
+                Menu("PC parts") {
+                    ForEach(Kind.pcParts) { kind in
+                        Button(kind.rawValue) { model.add(kind) }
+                    }
+                    Button("Desktop icon") { model.add(.appIcon) }
+                }
+                Menu("OS parts") {
+                    ForEach(Kind.osParts) { kind in
+                        Button(kind.rawValue) { model.add(kind) }
+                    }
                 }
                 Button("Image from Photos") { pickingPhoto = true }
                 Button("Image from Files") {
@@ -2463,6 +3245,7 @@ struct EditorView: View {
 }
 
 struct CanvasView: View {
+    @EnvironmentObject var store: Store
     @ObservedObject var model: EditorModel
     let snap: Bool
     let grid: Bool
@@ -2479,8 +3262,8 @@ struct CanvasView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let fit = max(0.1, min((geo.size.width - 24) / canvasSize.width,
-                                   (geo.size.height - 16) / canvasSize.height))
+            let fit = max(0.1, min((geo.size.width - 24) / model.frame.size.width,
+                                   (geo.size.height - 16) / model.frame.size.height))
             board
                 .scaleEffect(fit * zoom * pinch)
                 .position(x: geo.size.width / 2 + pan.width + moving.width,
@@ -2505,14 +3288,14 @@ struct CanvasView: View {
         ZStack {
             Backdrop(screen: model.frame)
                 .onTapGesture { model.selected = nil }
-            if previewFX { particles(front: false) }
+            if showEffects { particles(front: false) }
             ForEach(model.frame.elements) { element in
                 item(element)
             }
-            if previewFX { particles(front: true) }
+            if showEffects { particles(front: true) }
             if grid { gridLines }
         }
-        .frame(width: canvasSize.width, height: canvasSize.height)
+        .frame(width: model.frame.size.width, height: model.frame.size.height)
         .coordinateSpace(name: "canvas")
         .clipped()
         .border(Color.gray.opacity(0.5))
@@ -2525,16 +3308,21 @@ struct CanvasView: View {
         }
     }
 
+    // Editor animations pause while a prototype is playing.
+    private var showEffects: Bool {
+        previewFX && store.playing == nil
+    }
+
     private var gridLines: some View {
         Path { path in
             let space = CGFloat(max(5, gridSize))
-            for x in stride(from: space, to: canvasSize.width, by: space) {
+            for x in stride(from: space, to: model.frame.size.width, by: space) {
                 path.move(to: CGPoint(x: x, y: 0))
-                path.addLine(to: CGPoint(x: x, y: canvasSize.height))
+                path.addLine(to: CGPoint(x: x, y: model.frame.size.height))
             }
-            for y in stride(from: space, to: canvasSize.height, by: space) {
+            for y in stride(from: space, to: model.frame.size.height, by: space) {
                 path.move(to: CGPoint(x: 0, y: y))
-                path.addLine(to: CGPoint(x: canvasSize.width, y: y))
+                path.addLine(to: CGPoint(x: model.frame.size.width, y: y))
             }
         }
         .stroke(Color.cyan.opacity(0.25), lineWidth: 1)
@@ -2569,9 +3357,11 @@ struct CanvasView: View {
 
     private func item(_ element: Element) -> some View {
         ElementView(element: element)
-            .modifier(Effects(element: element, active: previewFX))
+            .modifier(Effects(element: element, active: showEffects))
             .opacity(element.hidden ? 0.25 : 1)
             .contentShape(Rectangle())
+            // Stops interactive parts catching touches while editing.
+            .overlay { Color.clear.contentShape(Rectangle()) }
             .overlay {
                 if model.selected == element.id {
                     Rectangle().stroke(swatch(outline), lineWidth: 3)
@@ -2598,10 +3388,19 @@ struct CanvasView: View {
                     let unit = max(1, snapStep)
                     x = (x / unit).rounded() * unit
                     y = (y / unit).rounded() * unit
-                    if abs(x - 195) < 10 { x = 195 }
-                    if abs(y - 422) < 10 { y = 422 }
+                    let middle = model.frame.w / 2
+                    if abs(x - middle) < 10 { x = middle }
+                    let centre = model.frame.h / 2
+                    if abs(y - centre) < 10 { y = centre }
                 }
+                let now = model.frame.elements.first { $0.id == element.id }
+                let dx = x - (now?.x ?? x)
+                let dy = y - (now?.y ?? y)
                 model.change(element.id) { $0.x = x; $0.y = y }
+                // Attached layers travel with their window.
+                for child in model.frame.elements where child.parent == element.id {
+                    model.change(child.id) { $0.x += dx; $0.y += dy }
+                }
             }
             .onEnded { _ in origin = nil }
     }
@@ -2716,8 +3515,15 @@ struct InspectorView: View {
                     InteractionsPage(model: model, element: e)
                 }
             }
-            if e.wrappedValue.kind == .image {
+            Group {
+            if e.wrappedValue.kind == .image || e.wrappedValue.kind == .appIcon {
                 ImageSection(element: e)
+            }
+            if e.wrappedValue.kind == .statusBar {
+                Section("Status bar") {
+                    SliderRow(title: "Battery level", value: e.value, range: 0...1, step: 0.05)
+                }
+            }
             }
             if e.wrappedValue.kind == .slider {
                 Section("Slider") {
@@ -2727,8 +3533,22 @@ struct InspectorView: View {
                         .font(.caption)
                 }
             }
-            if e.wrappedValue.kind == .tabs {
+            Group {
+            if e.wrappedValue.kind == .tabs || e.wrappedValue.kind == .panel {
                 TabsSection(model: model, element: e)
+            }
+            if e.wrappedValue.kind == .shell {
+                Section("Terminal commands") {
+                    TextField("Prompt", text: e.prompt)
+                        .textInputAutocapitalization(.never)
+                    TextField("neofetch=MyOS 1.0", text: e.commands, axis: .vertical)
+                        .lineLimit(3...12)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Text("One per line. name=answer prints text. name>Screen or layer name opens it.")
+                        .font(.caption)
+                }
+            }
             }
             if e.wrappedValue.kind == .console {
                 consoleSection(e)
@@ -2749,6 +3569,15 @@ struct InspectorView: View {
             styleSection(e)
             Section("Layer") {
                 TextField("Layer name", text: e.name)
+                if e.wrappedValue.kind != .window {
+                    Picker("Attach to window", selection: e.parent) {
+                        Text("None").tag(UUID?.none)
+                        ForEach(model.frame.elements.filter { $0.kind == .window }) { window in
+                            Text(window.label + " " + window.text).tag(Optional(window.id))
+                        }
+                    }
+                }
+                Toggle("Monospaced text", isOn: e.mono)
                 Toggle("Locked", isOn: e.locked)
                 Toggle("Hidden at start", isOn: e.hidden)
             }
@@ -2776,7 +3605,9 @@ struct InspectorView: View {
 
     private func hasText(_ kind: Kind) -> Bool {
         kind == .text || kind == .button || kind == .row || kind == .toggle || kind == .console
-            || kind == .slider || kind == .tabs || kind == .clock || kind == .ring
+            || kind == .slider || kind == .tabs || kind == .clock || kind == .ring || kind == .appIcon || kind == .statusBar
+            || kind == .notification || kind == .widget || kind == .calculator || kind == .notes
+            || Kind.pcParts.contains(kind)
     }
 
     private func textSection(_ e: Binding<Element>) -> some View {
@@ -2802,31 +3633,32 @@ struct InspectorView: View {
 
     private func layoutSection(_ e: Binding<Element>) -> some View {
         Section("Layout") {
-            SliderRow(title: "X", value: e.x, range: 0...390,
+            SliderRow(title: "X", value: e.x, range: 0...model.frame.w,
                       unlocked: -3000...3000)
-            SliderRow(title: "Y", value: e.y, range: 0...844,
+            SliderRow(title: "Y", value: e.y, range: 0...model.frame.h,
                       unlocked: -3000...4000)
-            SliderRow(title: "Width", value: e.w, range: 4...390,
+            SliderRow(title: "Width", value: e.w, range: 4...model.frame.w,
                       unlocked: 1...5000)
-            SliderRow(title: "Height", value: e.h, range: 4...844,
+            SliderRow(title: "Height", value: e.h, range: 4...model.frame.h,
                       unlocked: 1...5000)
             SliderRow(title: "Rotation", value: e.rotation, range: -180...180,
                       unlocked: -3600...3600)
             HStack {
                 Button("Left") { e.wrappedValue.x = e.wrappedValue.w / 2 }
-                Button("Centre") { e.wrappedValue.x = 195 }
-                Button("Right") { e.wrappedValue.x = 390 - e.wrappedValue.w / 2 }
+                Button("Centre") { e.wrappedValue.x = model.frame.w / 2 }
+                Button("Right") { e.wrappedValue.x = model.frame.w - e.wrappedValue.w / 2 }
             }
             .buttonStyle(.bordered)
             HStack {
                 Button("Top") { e.wrappedValue.y = e.wrappedValue.h / 2 }
-                Button("Middle") { e.wrappedValue.y = 422 }
-                Button("Bottom") { e.wrappedValue.y = 844 - e.wrappedValue.h / 2 }
+                Button("Middle") { e.wrappedValue.y = model.frame.h / 2 }
+                Button("Bottom") { e.wrappedValue.y = model.frame.h - e.wrappedValue.h / 2 }
             }
             .buttonStyle(.bordered)
             Button("Fill screen") {
                 var value = e.wrappedValue
-                value.x = 195; value.y = 422; value.w = 390; value.h = 844; value.radius = 0
+                value.x = model.frame.w / 2; value.y = model.frame.h / 2
+                value.w = model.frame.w; value.h = model.frame.h; value.radius = 0
                 e.wrappedValue = value
             }
         }
@@ -2870,6 +3702,9 @@ struct ImageSection: View {
         Section("Image") {
             PhotosPicker("Replace image", selection: $photo, matching: .images)
             Toggle("Fit whole picture", isOn: $element.imageFit)
+            if element.kind == .appIcon && element.image != nil {
+                Button("Remove picture", role: .destructive) { element.image = nil }
+            }
         }
         .onChange(of: photo) { item in
             guard let item = item else { return }
@@ -2957,6 +3792,12 @@ struct TabsSection: View {
                     Text("Nothing").tag(UUID?.none)
                     ForEach(model.project.frames) { frame in
                         Text(frame.name).tag(Optional(frame.id))
+                    }
+                    if element.kind == .panel {
+                        ForEach(model.frame.elements.filter { $0.id != element.id }) { layer in
+                            Text("Show/hide " + layer.label + " " + String(layer.text.prefix(10)))
+                                .tag(Optional(layer.id))
+                        }
                     }
                 }
             }
@@ -3248,6 +4089,7 @@ struct InteractionEditor: View {
                 ForEach(TapAction.allCases) { Text($0.rawValue).tag($0) }
             }
         }
+        Group {
         if item.action.needsScreen {
             Picker("Destination", selection: $item.screen) {
                 Text("None").tag(UUID?.none)
@@ -3255,6 +4097,12 @@ struct InteractionEditor: View {
                     Text(frame.name).tag(Optional(frame.id))
                 }
             }
+        }
+        if item.action == .home {
+            Text("Mark a screen as home in the Screen panel.")
+                .font(.caption)
+        }
+        if item.action.needsScreen || item.action == .home {
             Picker("Transition", selection: $item.transition) {
                 ForEach(ScreenTransition.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -3263,6 +4111,7 @@ struct InteractionEditor: View {
             }
             SliderRow(title: "Duration (s)", value: $item.duration, range: 0.1...2, step: 0.05,
                       unlocked: 0.05...60)
+        }
         }
         if item.action == .load {
             Text("The bars fill first, then the destination opens.")
@@ -3402,6 +4251,35 @@ struct ScreenView: View {
                             set: { model.frame.rainbowSpeed = $0 }
                         ), range: 0.1...5, step: 0.1, unlocked: 0.01...40)
                     }
+                }
+                Section("Screen size: \(Int(model.frame.w)) x \(Int(model.frame.h))") {
+                    Menu("Choose a size") {
+                        Button("Phone") { model.resize(390, 844) }
+                        Button("Tablet") { model.resize(820, 1180) }
+                        Button("PC wide 16:9") { model.resize(960, 540) }
+                        Button("PC classic 4:3") { model.resize(800, 600) }
+                        Button("PC ultrawide") { model.resize(1260, 540) }
+                    }
+                    SliderRow(title: "Width", value: Binding(
+                        get: { model.frame.w },
+                        set: { model.frame.width = $0 }
+                    ), range: 300...1400, step: 10, unlocked: 100...4000)
+                    SliderRow(title: "Height", value: Binding(
+                        get: { model.frame.h },
+                        set: { model.frame.height = $0 }
+                    ), range: 300...1400, step: 10, unlocked: 100...4000)
+                }
+                Section("Order and home") {
+                    Toggle("This is the home screen", isOn: Binding(
+                        get: { model.frame.isHome == true },
+                        set: { model.setHome($0) }
+                    ))
+                    Button("Move earlier") { model.moveFrame(to: model.frameIndex - 1) }
+                        .disabled(model.frameIndex == 0)
+                    Button("Move later") { model.moveFrame(to: model.frameIndex + 1) }
+                        .disabled(model.frameIndex >= model.project.frames.count - 1)
+                    Button("Start the prototype here") { model.moveFrame(to: 0) }
+                        .disabled(model.frameIndex == 0)
                 }
                 Button("Duplicate screen") { model.addFrame(copying: true); dismiss() }
                 Button("Delete screen", role: .destructive) { model.deleteFrame(); dismiss() }
@@ -3763,6 +4641,10 @@ struct PlayerView: View {
     @State private var flashAmount = 0.0
     @State private var particlesOff = false
     @State private var burstStart: Date?
+    @State private var moved: [UUID: CGSize] = [:]
+    @State private var dragStart: CGSize?
+    @State private var order: [UUID: Double] = [:]
+    @State private var topOrder = 0.0
     @State private var tilt = TiltMonitor()
     @State private var ripples: [Ripple] = []
     @AppStorage("labFilter") private var filterName = ScreenFilter.none.rawValue
@@ -3786,7 +4668,12 @@ struct PlayerView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let scale = min(geo.size.width / canvasSize.width, geo.size.height / canvasSize.height)
+            let size = frame.size
+            // Wide screens turn sideways while the phone is upright.
+            let turned = size.width > size.height && geo.size.height > geo.size.width
+            let roomW = turned ? geo.size.height : geo.size.width
+            let roomH = turned ? geo.size.width : geo.size.height
+            let scale = min(roomW / size.width, roomH / size.height)
             ZStack {
                 Backdrop(screen: frame)
                 ZStack {
@@ -3794,10 +4681,11 @@ struct PlayerView: View {
                         .id(layer)
                         .transition(transition.effect)
                 }
-                .frame(width: canvasSize.width, height: canvasSize.height)
+                .frame(width: size.width, height: size.height)
                 .modifier(ShakeEffect(amount: shakes))
                 .clipped()
                 .scaleEffect(scale)
+                .rotationEffect(.degrees(turned ? 90 : 0))
                 .position(x: geo.size.width / 2, y: geo.size.height / 2)
                 .blur(radius: receding ? 24 : 0)
                 .scaleEffect(receding ? 0.88 : 1)
@@ -3929,11 +4817,15 @@ struct PlayerView: View {
             particleLayer(screen, front: false)
             ForEach(Array(screen.elements.enumerated()), id: \.element.link) { index, element in
                 playable(element)
+                    .offset(moved[element.parent ?? element.id] ?? .zero)
                     .modifier(Parallax(monitor: tilt, depth: depth(index, screen.elements.count)))
+                    .zIndex(order[element.parent ?? element.id] ?? 0)
             }
             particleLayer(screen, front: true)
+                .zIndex(1_000_000)
         }
-        .frame(width: canvasSize.width, height: canvasSize.height)
+        .frame(width: screen.size.width, height: screen.size.height)
+        .coordinateSpace(name: "play")
     }
 
     // Layers nearer the front move further.
@@ -3965,7 +4857,93 @@ struct PlayerView: View {
     }
 
     private func isVisible(_ element: Element) -> Bool {
-        visibility[element.id] ?? !element.hidden
+        let own = visibility[element.id] ?? !element.hidden
+        guard let id = element.parent,
+              let window = frame.elements.first(where: { $0.id == id }) else { return own }
+        return own && (visibility[window.id] ?? !window.hidden)
+    }
+
+    // Brings a window and its attached layers to the front.
+    private func raise(_ id: UUID) {
+        guard order[id] != topOrder || topOrder == 0 else { return }
+        topOrder += 1
+        order[id] = topOrder
+    }
+
+    private func windowTouch(_ element: Element) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .highPriorityGesture(
+                        DragGesture(minimumDistance: 2, coordinateSpace: .named("play"))
+                            .onChanged { drag in
+                                let base = dragStart ?? moved[element.id] ?? .zero
+                                dragStart = base
+                                raise(element.id)
+                                moved[element.id] = CGSize(
+                                    width: base.width + drag.translation.width,
+                                    height: base.height + drag.translation.height)
+                            }
+                            .onEnded { _ in dragStart = nil }
+                    )
+                ForEach(0..<2, id: \.self) { _ in
+                    Color.clear
+                        .frame(width: 24)
+                        .contentShape(Rectangle())
+                        .onTapGesture { setLayer(element.id, visible: false) }
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: titleBarHeight)
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    raise(element.id)
+                    fire(element, .tap)
+                }
+        }
+    }
+
+    private func panelTouch(_ element: Element) -> some View {
+        let count = element.text.components(separatedBy: "\n").count
+        return HStack(spacing: 6) {
+            ForEach(0..<count, id: \.self) { i in
+                Color.clear
+                    .frame(width: panelButtonWidth(element))
+                    .contentShape(Rectangle())
+                    .onTapGesture { pressPanel(element, i) }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(4)
+        .id(count)
+    }
+
+    private func pressPanel(_ element: Element, _ index: Int) {
+        fire(element, .tap)
+        guard element.tabTargets.indices.contains(index),
+              let target = element.tabTargets[index] else { return }
+        if let layer = frame.elements.first(where: { $0.id == target }) {
+            let show = !isVisible(layer)
+            setLayer(layer.id, visible: show)
+            if show { raise(layer.id) }
+        } else {
+            go(Interaction(action: .goTo, screen: target))
+        }
+    }
+
+    // Opens a screen or shows a layer by its name, for terminal commands.
+    private func openNamed(_ name: String) {
+        let wanted = name.lowercased()
+        if let screen = project.frames.first(where: { $0.name.lowercased() == wanted }) {
+            go(Interaction(action: .goTo, screen: screen.id))
+        } else if let layer = frame.elements.first(where: {
+            $0.name.lowercased() == wanted || $0.text.lowercased() == wanted
+        }) {
+            setLayer(layer.id, visible: true)
+            raise(layer.id)
+        }
     }
 
     private func has(_ element: Element, _ triggers: [Trigger]) -> GestureMask {
@@ -4013,6 +4991,16 @@ struct PlayerView: View {
         } else if element.kind == .slider {
             ElementView(element: shown, value: sliders[element.id])
                 .overlay(sliderTouch(element))
+        } else if element.kind == .window {
+            ElementView(element: shown)
+                .overlay(windowTouch(element))
+        } else if element.kind == .panel {
+            ElementView(element: shown)
+                .overlay(panelTouch(shown))
+        } else if element.kind == .shell {
+            ShellView(element: shown, open: openNamed)
+        } else if element.kind == .notes {
+            NotesPad(element: shown)
         } else if element.kind == .tabs {
             ElementView(element: shown, selectedTab: selectedTab(element))
                 .overlay(tabTouch(shown))
@@ -4164,6 +5152,11 @@ struct PlayerView: View {
             particlesOff.toggle()
         case .sound:
             AudioServicesPlaySystemSound(SystemSoundID(item.sound.rawValue))
+        case .home:
+            var trip = item
+            trip.action = .goTo
+            trip.screen = (project.frames.first { $0.isHome == true } ?? project.frames.first)?.id
+            go(trip)
         }
     }
 
@@ -4276,6 +5269,9 @@ struct PlayerView: View {
         colors = [:]
         inks = [:]
         texts = [:]
+        moved = [:]
+        order = [:]
+        topOrder = 0
         particlesOff = false
         burstStart = nil
         popup = nil
