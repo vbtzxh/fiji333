@@ -1236,6 +1236,7 @@ struct HomeView: View {
                 Button("Copy to clipboard") { export(project) }
                 Button("Delete", role: .destructive) { deleting = project }
             }
+            .buttonStyle(.borderless)
         }
     }
 
@@ -1419,6 +1420,7 @@ struct Effects: ViewModifier {
             TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
                 apply(content, context.date.timeIntervalSinceReferenceDate * element.effectSpeed)
             }
+            .frame(width: element.w, height: element.h)
         }
     }
 
@@ -2200,6 +2202,7 @@ struct OSPartView: View {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 Text(context.date, format: .dateTime.hour().minute())
             }
+            .fixedSize()
             Spacer()
             Text(element.text).lineLimit(1)
             Text("\(Int((level * 100).rounded()))%")
@@ -2338,7 +2341,8 @@ struct NotesPad: View {
 
     init(element: Element) {
         self.element = element
-        _note = AppStorage(wrappedValue: element.text, "note-" + element.link.uuidString)
+        let key = "note-" + element.link.uuidString + "-" + String(element.text.prefix(40))
+        _note = AppStorage(wrappedValue: element.text, key)
     }
 
     var body: some View {
@@ -2427,6 +2431,7 @@ struct PCPartView: View {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 Text(context.date, format: .dateTime.hour().minute())
             }
+            .fixedSize()
         }
         .font(font)
         .foregroundColor(ink)
@@ -2446,6 +2451,7 @@ struct ShellView: View {
     let open: (String) -> Void
     @State private var log: [String] = []
     @State private var input = ""
+    @FocusState private var typing: Bool
 
     // Each line is "command=answer" or "command>screen or layer name".
     private var custom: [(name: String, mark: Character, value: String)] {
@@ -2469,6 +2475,7 @@ struct ShellView: View {
                         TextField("", text: $input)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .focused($typing)
                             .onSubmit(run)
                     }
                     .id("input")
@@ -2484,9 +2491,11 @@ struct ShellView: View {
         .background(swatch(element.fill))
         .clipShape(RoundedRectangle(cornerRadius: element.radius, style: .continuous))
         .opacity(element.opacity)
+        .rotationEffect(.degrees(element.rotation))
     }
 
     private func run() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { typing = true }
         let typed = input.trimmingCharacters(in: .whitespaces)
         input = ""
         guard !typed.isEmpty else { return }
@@ -2761,6 +2770,7 @@ final class EditorModel: ObservableObject {
     @Published var selected: UUID?
     @Published var past: [Project] = []
     @Published var future: [Project] = []
+    private var redoBase: Project?
 
     init(project: Project) {
         self.project = project
@@ -2779,19 +2789,26 @@ final class EditorModel: ObservableObject {
         if past.last == project { return }
         past.append(project)
         if past.count > 50 { past.removeFirst() }
-        future = []
+    }
+
+    // Redo is only valid while nothing has changed since the last undo.
+    var canRedo: Bool {
+        !future.isEmpty && project == redoBase
     }
 
     func undo() {
         while past.last == project { past.removeLast() }
         guard let previous = past.popLast() else { return }
+        if project != redoBase { future = [] }
         future.append(project)
+        redoBase = previous
         restore(previous)
     }
 
     func redo() {
-        guard let next = future.popLast() else { return }
+        guard canRedo, let next = future.popLast() else { return }
         past.append(project)
+        redoBase = next
         restore(next)
     }
 
@@ -2822,6 +2839,17 @@ final class EditorModel: ObservableObject {
         copy.x += 16
         copy.y += 16
         frame.elements.append(copy)
+        // A window brings copies of its attached layers.
+        let source = selected
+        for child in frame.elements where child.parent == source {
+            var extra = child
+            extra.id = UUID()
+            extra.link = UUID()
+            extra.parent = copy.id
+            extra.x += 16
+            extra.y += 16
+            frame.elements.append(extra)
+        }
         selected = copy.id
     }
 
@@ -2833,6 +2861,9 @@ final class EditorModel: ObservableObject {
             copy.link = UUID()
             copy.x += 16
             copy.y += 16
+        }
+        if !frame.elements.contains(where: { $0.id == copy.parent }) {
+            copy.parent = nil
         }
         frame.elements.append(copy)
         selected = copy.id
@@ -3086,7 +3117,7 @@ struct EditorView: View {
             Text(model.project.name).bold().lineLimit(1)
             Spacer()
             Button("Undo") { model.undo() }.disabled(model.past.isEmpty)
-            Button("Redo") { model.redo() }.disabled(model.future.isEmpty)
+            Button("Redo") { model.redo() }.disabled(!model.canRedo)
             Menu("Export") {
                 Button("Save design to Files") { exportDesign() }
                 Button("Save screen as PNG") { exportScreen(share: false) }
@@ -3099,6 +3130,8 @@ struct EditorView: View {
             .buttonStyle(.borderedProminent)
         }
         .font(.subheadline)
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
         .padding(.horizontal)
         .padding(.vertical, 8)
     }
@@ -3274,6 +3307,14 @@ struct CanvasView: View {
         .simultaneousGesture(zooming)
         .clipped()
         .overlay(alignment: .bottomTrailing) { zoomButtons }
+        .onChange(of: model.frame.id) { _ in
+            zoom = 1
+            pan = .zero
+        }
+        .onChange(of: model.frame.size.width) { _ in
+            zoom = 1
+            pan = .zero
+        }
     }
 
     private var zoomRange: ClosedRange<CGFloat> {
@@ -4641,6 +4682,7 @@ struct PlayerView: View {
     @State private var flashAmount = 0.0
     @State private var particlesOff = false
     @State private var burstStart: Date?
+    @State private var heading: UUID?
     @State private var moved: [UUID: CGSize] = [:]
     @State private var dragStart: CGSize?
     @State private var order: [UUID: Double] = [:]
@@ -5167,7 +5209,7 @@ struct PlayerView: View {
     }
 
     private func go(_ item: Interaction) {
-        guard let id = item.screen, id != frame.id,
+        guard let id = item.screen, id != frame.id, id != heading,
               project.frames.contains(where: { $0.id == id }) else { return }
         history.append(Step(screen: frame.id, transition: item.transition,
                             easing: item.easing, duration: item.duration))
@@ -5183,8 +5225,10 @@ struct PlayerView: View {
         loading?.cancel()
         timers.forEach { $0.cancel() }
         transition = style
+        heading = id
         // Wait one cycle so the old screen picks up the new transition.
         DispatchQueue.main.async {
+            heading = nil
             if style == .instant {
                 layer = UUID()
                 current = id
