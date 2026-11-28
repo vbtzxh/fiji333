@@ -14,6 +14,9 @@ targets:
       properties:
         CFBundleDisplayName: fiji333
         UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSMotionUsageDescription: Used for the 3D tilt effect in prototypes.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
     settings:
