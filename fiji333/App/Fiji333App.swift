@@ -3,6 +3,7 @@ import UIKit
 import PhotosUI
 import UniformTypeIdentifiers
 import AudioToolbox
+import CoreMotion
 
 // Fiji Studio: design and play your own jailbreak-style prototypes.
 
@@ -601,6 +602,52 @@ enum Templates {
         return Project(name: "Jailbreak Starter", frames: [home, done])
     }
 
+    static func random(name: String) -> Project {
+        let title = name.isEmpty ? "fiji333" : name
+        let colors = [0, 29, 24, 25, 17, 21, 30, 11]
+        let accent = [5, 6, 8, 10, 12, 13, 23].randomElement() ?? 10
+        let weather = ["Snow", "Rain", "Stars", "Matrix", "Embers", "Rainbow dust",
+                       "Bubbles"].randomElement() ?? "Stars"
+        var home = Frame(name: "Home")
+        var done = Frame(name: "Done")
+        for index in 0..<2 {
+            var screen = index == 0 ? home : done
+            screen.fill = colors.randomElement() ?? 0
+            screen.extra = [colors.randomElement() ?? 29]
+            screen.angle = Double([0, 45, 90, 135].randomElement() ?? 0)
+            screen.particles = [Particles.preset(weather)]
+            if index == 0 { home = screen } else { done = screen }
+        }
+
+        var heading = makeElement(.text)
+        heading.text = title; heading.y = 160; heading.w = 370; heading.fontSize = 52
+        heading.effect = [.rainbow, .glow, .glitch, .breathe].randomElement() ?? .glow
+        var ring = makeElement(.ring)
+        ring.y = 390; ring.fill = accent
+        var start = makeElement(.button)
+        start.text = ["Jailbreak", "Start", "Unlock", "Go"].randomElement() ?? "Start"
+        start.y = 650; start.w = 280; start.fill = accent
+        start.radius = Double([8, 16, 30].randomElement() ?? 16)
+        start.interactions = [Interaction(action: .load, screen: done.id)]
+        home.elements = [heading, ring, start]
+
+        var message = makeElement(.text)
+        message.text = "Done!"; message.y = 150; message.w = 340; message.fontSize = 56
+        message.motion = .pop
+        var log = makeElement(.console)
+        log.y = 390
+        log.text = "[*] \(title)\n[+] warming up\n[+] adding \(weather.lowercased())\n[*] complete"
+        var again = makeElement(.button)
+        again.text = "Respring"; again.y = 650; again.w = 280; again.fill = accent
+        again.interactions = [Interaction(action: .respring)]
+        var party = Interaction(action: .burst)
+        party.trigger = .delay
+        party.wait = 0.4
+        message.interactions = [party]
+        done.elements = [message, log, again]
+        return Project(name: title, frames: [home, done])
+    }
+
     static func party() -> Project {
         var screen = Frame(name: "Party")
         screen.fill = 29
@@ -646,38 +693,80 @@ final class Store: ObservableObject {
     private let oldKey = "fijistudio.projects"
     private var pending: Task<Void, Never>?
 
-    private var fileURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("fijistudio.json")
-    }
+    private var written: [UUID: Project] = [:]
+    @Published var lastSaved: Date?
+    @Published var saveProblem: String?
 
     init() {
-        let saved = (try? Data(contentsOf: fileURL))
+        Vault.prepare()
+        let saved = (try? Data(contentsOf: Vault.library))
             ?? UserDefaults.standard.data(forKey: oldKey)
         if let data = saved,
            let list = try? JSONDecoder().decode([Project].self, from: data) {
             projects = list
+            Vault.backup(data)
         } else {
             if let data = saved {
-                try? data.write(to: fileURL.appendingPathExtension("backup"))
+                Vault.backup(data, label: "unreadable")
             }
-            projects = [Templates.jailbreak()]
+            let recovered = Vault.recover()
+            projects = recovered.isEmpty ? [Templates.jailbreak()] : recovered
         }
+        flush()
     }
 
     private func save() {
         pending?.cancel()
         pending = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await Task.sleep(nanoseconds: 800_000_000)
             if Task.isCancelled { return }
             flush()
         }
     }
 
     func flush() {
-        if let data = try? JSONEncoder().encode(projects) {
-            try? data.write(to: fileURL, options: .atomic)
+        pending?.cancel()
+        do {
+            Vault.prepare()
+            let data = try JSONEncoder().encode(projects)
+            try data.write(to: Vault.library, options: .atomic)
+            // One readable file per design, rewritten only when it changes.
+            for project in projects where written[project.id] != project {
+                try Vault.mirror(project)
+                written[project.id] = project
+            }
+            let alive = Set(projects.map { $0.id })
+            for id in Array(written.keys) where !alive.contains(id) {
+                Vault.removeMirror(id)
+                written[id] = nil
+            }
+            lastSaved = Date()
+            saveProblem = nil
+        } catch {
+            saveProblem = error.localizedDescription
         }
+    }
+
+    func backupNow() -> Bool {
+        flush()
+        guard let data = try? Data(contentsOf: Vault.library) else { return false }
+        return Vault.backup(data, label: "manual")
+    }
+
+    // Adds designs from a design file or a whole library file.
+    func importData(_ data: Data) -> Int {
+        var found: [Project] = []
+        if let one = try? JSONDecoder().decode(Project.self, from: data) {
+            found = [one]
+        } else if let many = try? JSONDecoder().decode([Project].self, from: data) {
+            found = many
+        }
+        found = found.filter { !$0.frames.isEmpty }
+        for var project in found {
+            project.id = UUID()
+            add(project)
+        }
+        return found.count
     }
 
     func add(_ project: Project) {
@@ -696,20 +785,163 @@ final class Store: ObservableObject {
     }
 }
 
-struct DataDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.json, .png] }
-    var data: Data
+// MARK: - Files on the phone
 
-    init(data: Data) {
-        self.data = data
+// Everything lives in the app's Documents folder, visible in the Files app.
+enum Vault {
+    static var root: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+    static var library: URL { root.appendingPathComponent("fijistudio.json") }
+    static var autosave: URL { root.appendingPathComponent("Autosave", isDirectory: true) }
+    static var backups: URL { root.appendingPathComponent("Backups", isDirectory: true) }
+
+    static func prepare() {
+        for folder in [autosave, backups] {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        let note = root.appendingPathComponent("READ ME.txt")
+        if !FileManager.default.fileExists(atPath: note.path) {
+            let text = """
+            Autosave: one file for each design.
+            Backups: older copies of all your designs.
+            fijistudio.json: the main save. Do not rename it.
+            """
+            try? text.write(to: note, atomically: true, encoding: .utf8)
+        }
     }
 
-    init(configuration: ReadConfiguration) throws {
-        data = configuration.file.regularFileContents ?? Data()
+    static func safeName(_ name: String) -> String {
+        let bad = CharacterSet(charactersIn: "/\\:?%*|\"<>").union(.newlines)
+        let clean = name.components(separatedBy: bad).joined(separator: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+        return clean.isEmpty ? "design" : String(clean.prefix(60))
     }
 
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
+    static func files(in folder: URL) -> [URL] {
+        let list = (try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil)) ?? []
+        return list.filter { $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+    }
+
+    private static func tag(_ id: UUID) -> String {
+        "[" + String(id.uuidString.prefix(8)) + "].json"
+    }
+
+    static func removeMirror(_ id: UUID) {
+        for file in files(in: autosave) where file.lastPathComponent.hasSuffix(tag(id)) {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    static func mirror(_ project: Project) throws {
+        let name = safeName(project.name) + " " + tag(project.id)
+        let target = autosave.appendingPathComponent(name)
+        let data = try JSONEncoder().encode(project)
+        try data.write(to: target, options: .atomic)
+        // Remove the copy saved under an older name.
+        for file in files(in: autosave)
+        where file.lastPathComponent.hasSuffix(tag(project.id)) && file.lastPathComponent != name {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    static func recover() -> [Project] {
+        files(in: autosave).compactMap { file in
+            guard let data = try? Data(contentsOf: file) else { return nil }
+            return try? JSONDecoder().decode(Project.self, from: data)
+        }
+    }
+
+    // Keeps the 15 newest backups.
+    @discardableResult
+    static func backup(_ data: Data, label: String = "auto") -> Bool {
+        prepare()
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        let target = backups.appendingPathComponent("\(format.string(from: Date())) \(label).json")
+        guard (try? data.write(to: target, options: .atomic)) != nil else { return false }
+        for old in files(in: backups).dropFirst(15) {
+            try? FileManager.default.removeItem(at: old)
+        }
+        return true
+    }
+}
+
+// The system document picker, shown from whatever screen is on top.
+@MainActor
+final class FilePicker: NSObject, UIDocumentPickerDelegate {
+    private static var current: FilePicker?
+    private let done: (URL?) -> Void
+
+    private init(done: @escaping (URL?) -> Void) {
+        self.done = done
+    }
+
+    static func open(_ types: [UTType], done: @escaping (Data) -> Void) {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+        present(picker) { url in
+            if let url = url, let data = readFile(url) { done(data) }
+        }
+    }
+
+    static func save(_ data: Data, name: String, done: @escaping (Bool) -> Void = { _ in }) {
+        guard let url = temporary(data, name: name) else {
+            done(false)
+            return
+        }
+        let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+        present(picker) { saved in done(saved != nil) }
+    }
+
+    static func share(_ data: Data, name: String) {
+        guard let url = temporary(data, name: name), let host = topController() else { return }
+        let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        sheet.popoverPresentationController?.sourceView = host.view
+        sheet.popoverPresentationController?.sourceRect = CGRect(
+            x: host.view.bounds.midX, y: host.view.bounds.midY, width: 1, height: 1)
+        host.present(sheet, animated: true)
+    }
+
+    private static func temporary(_ data: Data, name: String) -> URL? {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        guard (try? data.write(to: url, options: .atomic)) != nil else { return nil }
+        return url
+    }
+
+    private static func present(_ picker: UIDocumentPickerViewController,
+                                done: @escaping (URL?) -> Void) {
+        // Wait briefly so a closing menu does not block the picker.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            guard let host = topController() else { return }
+            let delegate = FilePicker(done: done)
+            current = delegate
+            picker.delegate = delegate
+            host.present(picker, animated: true)
+        }
+    }
+
+    private static func topController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let windows = scenes.flatMap { $0.windows }
+        var top = (windows.first { $0.isKeyWindow } ?? windows.first)?.rootViewController
+        while let next = top?.presentedViewController, !next.isBeingDismissed {
+            top = next
+        }
+        return top
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController,
+                        didPickDocumentsAt urls: [URL]) {
+        done(urls.first)
+        FilePicker.current = nil
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        done(nil)
+        FilePicker.current = nil
     }
 }
 
@@ -785,10 +1017,7 @@ struct HomeView: View {
     @State private var showAbout = false
     @State private var showSettings = false
     @AppStorage("studioName") private var studioName = "Fiji Studio"
-    @State private var importing = false
-    @State private var exporting = false
-    @State private var document = DataDocument(data: Data())
-    @State private var filename = "design"
+    @State private var showLabs = false
 
     var body: some View {
         NavigationStack {
@@ -801,8 +1030,26 @@ struct HomeView: View {
                     Button("Template: Jailbreak Starter") { create(Templates.jailbreak()) }
                     Button("Template: Hacker Console") { create(Templates.terminal()) }
                     Button("Template: Rainbow Party") { create(Templates.party()) }
-                    Button("Open from Files") { importing = true }
+                    Button("Open from Files") { openFile() }
                     Button("Import from clipboard") { importProject() }
+                }
+                Section {
+                    Button("Experimental Labs") { showLabs = true }
+                }
+                Section("Saving") {
+                    if let problem = store.saveProblem {
+                        Text("Save failed: " + problem).foregroundColor(.red)
+                    } else if let date = store.lastSaved {
+                        Text("Autosaved at " + date.formatted(date: .omitted, time: .standard))
+                    }
+                    Text("Files app: On My iPhone, then fiji333")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Button("Back up now") {
+                        show(store.backupNow() ? "Backup saved" : "Backup failed")
+                    }
+                    Button("Save all designs to Files") { saveAll() }
+                    NavigationLink("Restore a backup") { BackupsView() }
                 }
                 Section("Your files") {
                     if store.projects.isEmpty {
@@ -811,11 +1058,6 @@ struct HomeView: View {
                     ForEach(store.projects) { project in
                         projectRow(project)
                     }
-                }
-            }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
-                if case .success(let url) = result {
-                    load(readFile(url))
                 }
             }
             .navigationTitle(studioName)
@@ -828,6 +1070,9 @@ struct HomeView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .background(Color.clear.sheet(isPresented: $showLabs) {
+                LabsView().environmentObject(store)
+            })
             .alert("Rename file", isPresented: Binding(
                 get: { renaming != nil },
                 set: { if !$0 { renaming = nil } }
@@ -853,10 +1098,6 @@ struct HomeView: View {
             } message: {
                 Text("A design game. Prototypes are simulations and do not change your device.")
             }
-        }
-        .fileExporter(isPresented: $exporting, document: document,
-                      contentType: .json, defaultFilename: filename) { result in
-            if case .success = result { show("Saved to Files") }
         }
     }
 
@@ -889,6 +1130,7 @@ struct HomeView: View {
                     store.add(copy)
                 }
                 Button("Save to Files") { saveFile(project) }
+                Button("Share") { shareFile(project) }
                 Button("Copy to clipboard") { export(project) }
                 Button("Delete", role: .destructive) { deleting = project }
             }
@@ -919,22 +1161,30 @@ struct HomeView: View {
     }
 
     private func load(_ data: Data?) {
-        if let data = data,
-           var project = try? JSONDecoder().decode(Project.self, from: data),
-           !project.frames.isEmpty {
-            project.id = UUID()
-            store.add(project)
-            show("Imported \(project.name)")
-        } else {
-            show("That is not a Fiji Studio design")
-        }
+        let count = data.map { store.importData($0) } ?? 0
+        show(count > 0 ? "Imported \(count) design(s)" : "That is not a Fiji Studio design")
+    }
+
+    private func openFile() {
+        FilePicker.open([.json, .text, .data]) { data in load(data) }
     }
 
     private func saveFile(_ project: Project) {
-        if let data = try? JSONEncoder().encode(project) {
-            document = DataDocument(data: data)
-            filename = project.name
-            exporting = true
+        guard let data = try? JSONEncoder().encode(project) else { return }
+        FilePicker.save(data, name: Vault.safeName(project.name) + ".json") { saved in
+            if saved { show("Saved to Files") }
+        }
+    }
+
+    private func shareFile(_ project: Project) {
+        guard let data = try? JSONEncoder().encode(project) else { return }
+        FilePicker.share(data, name: Vault.safeName(project.name) + ".json")
+    }
+
+    private func saveAll() {
+        guard let data = try? JSONEncoder().encode(store.projects) else { return }
+        FilePicker.save(data, name: "All designs.json") { saved in
+            if saved { show("Saved to Files") }
         }
     }
 
@@ -2035,10 +2285,6 @@ struct EditorView: View {
     @AppStorage("nudgeStep") private var nudgeStep = 1.0
     @State private var pickingPhoto = false
     @State private var photo: PhotosPickerItem?
-    @State private var importingImage = false
-    @State private var exporting = false
-    @State private var document = DataDocument(data: Data())
-    @State private var exportType = UTType.json
 
     init(project: Project) {
         _model = StateObject(wrappedValue: EditorModel(project: project))
@@ -2051,11 +2297,6 @@ struct EditorView: View {
             CanvasView(model: model, snap: snap, grid: grid)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(swatch(editorBack))
-                .fileImporter(isPresented: $importingImage, allowedContentTypes: [.image]) { result in
-                    if case .success(let url) = result, let data = readFile(url) {
-                        model.addImage(data)
-                    }
-                }
             if model.selected != nil {
                 selectionBar
                 if arrows { nudgeBar }
@@ -2092,20 +2333,17 @@ struct EditorView: View {
 
     private func exportDesign() {
         if let data = try? JSONEncoder().encode(model.project) {
-            document = DataDocument(data: data)
-            exportType = .json
-            exporting = true
+            FilePicker.save(data, name: Vault.safeName(model.project.name) + ".json")
         }
     }
 
-    private func exportScreen() {
+    private func exportScreen(share: Bool) {
         let renderer = ImageRenderer(content: ScreenPicture(frame: model.frame))
         renderer.scale = 3
-        if let data = renderer.uiImage?.pngData() {
-            document = DataDocument(data: data)
-            exportType = .png
-            exporting = true
-        }
+        guard let data = renderer.uiImage?.pngData() else { return }
+        let name = Vault.safeName(model.frame.name) + ".png"
+        if share { FilePicker.share(data, name: name) }
+        else { FilePicker.save(data, name: name) }
     }
 
     private var topBar: some View {
@@ -2118,7 +2356,8 @@ struct EditorView: View {
             Button("Redo") { model.redo() }.disabled(model.future.isEmpty)
             Menu("Export") {
                 Button("Save design to Files") { exportDesign() }
-                Button("Save screen as PNG") { exportScreen() }
+                Button("Save screen as PNG") { exportScreen(share: false) }
+                Button("Share screen as PNG") { exportScreen(share: true) }
             }
             Button("Play") {
                 store.update(model.project)
@@ -2129,8 +2368,6 @@ struct EditorView: View {
         .font(.subheadline)
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .fileExporter(isPresented: $exporting, document: document, contentType: exportType,
-                      defaultFilename: model.project.name) { _ in }
     }
 
     private var frameTabs: some View {
@@ -2199,7 +2436,9 @@ struct EditorView: View {
                     Button(kind.rawValue) { model.add(kind) }
                 }
                 Button("Image from Photos") { pickingPhoto = true }
-                Button("Image from Files") { importingImage = true }
+                Button("Image from Files") {
+                    FilePicker.open([.image]) { data in model.addImage(data) }
+                }
                 if let copied = store.clipboard {
                     Button("Paste") { model.paste(copied) }
                 }
@@ -3175,6 +3414,176 @@ struct ScreenView: View {
     }
 }
 
+// MARK: - Experimental Labs
+
+enum ScreenFilter: String, CaseIterable, Identifiable {
+    case none = "None"
+    case crt = "Old CRT"
+    case mono = "Black and white"
+    case invert = "Inverted"
+    case vapor = "Vaporwave"
+    case night = "Night vision"
+    var id: String { rawValue }
+}
+
+struct LabsView: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("labFilter") private var filter = ScreenFilter.none.rawValue
+    @AppStorage("labTilt") private var tilt = false
+    @AppStorage("labTiltAmount") private var tiltAmount = 18.0
+    @AppStorage("labRipple") private var ripple = false
+    @State private var name = "fiji333"
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Jailbreak name", text: $name)
+                    Button("Generate a random jailbreak") {
+                        let project = Templates.random(name: name)
+                        store.add(project)
+                        store.editing = project.id
+                        dismiss()
+                    }
+                } header: {
+                    Text("Magic generator")
+                } footer: {
+                    Text("Builds a new design with random colours, particles and effects.")
+                }
+                Section("Prototype screen filter") {
+                    Picker("Filter", selection: $filter) {
+                        ForEach(ScreenFilter.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                    }
+                }
+                Section("Prototype interaction") {
+                    Toggle("3D tilt (move your phone)", isOn: $tilt)
+                    if tilt {
+                        SliderRow(title: "Tilt strength", value: $tiltAmount, range: 4...50,
+                                  unlocked: 0...200)
+                    }
+                    Toggle("Touch ripples", isOn: $ripple)
+                }
+                Text("Labs features are experimental and may change.")
+                    .font(.caption)
+            }
+            .navigationTitle("Labs")
+            .toolbar { Button("Done") { dismiss() } }
+        }
+    }
+}
+
+struct BackupsView: View {
+    @EnvironmentObject var store: Store
+    @State private var files: [URL] = []
+    @State private var message = ""
+    @State private var showMessage = false
+
+    var body: some View {
+        List {
+            if files.isEmpty { Text("No backups yet") }
+            ForEach(files, id: \.self) { file in
+                Button(file.deletingPathExtension().lastPathComponent) { restore(file) }
+            }
+        }
+        .navigationTitle("Backups")
+        .onAppear { files = Vault.files(in: Vault.backups) }
+        .alert(message, isPresented: $showMessage) {
+            Button("OK", role: .cancel) {}
+        }
+    }
+
+    // Restored designs are added as copies, so nothing is overwritten.
+    private func restore(_ file: URL) {
+        let count = readFile(file).map { store.importData($0) } ?? 0
+        message = count > 0 ? "Added \(count) design(s)" : "That backup could not be read"
+        showMessage = true
+    }
+}
+
+final class TiltMonitor: ObservableObject {
+    @Published var x = 0.0
+    @Published var y = 0.0
+    private let manager = CMMotionManager()
+    private var origin: (Double, Double)?
+
+    func start() {
+        guard manager.isDeviceMotionAvailable, !manager.isDeviceMotionActive else { return }
+        origin = nil
+        manager.deviceMotionUpdateInterval = 1.0 / 30.0
+        manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
+            guard let self = self, let motion = motion else { return }
+            let roll = motion.attitude.roll
+            let pitch = motion.attitude.pitch
+            let base = self.origin ?? (roll, pitch)
+            self.origin = base
+            self.x = max(-1, min(1, roll - base.0))
+            self.y = max(-1, min(1, pitch - base.1))
+        }
+    }
+
+    func stop() {
+        manager.stopDeviceMotionUpdates()
+        x = 0
+        y = 0
+    }
+}
+
+struct Parallax: ViewModifier {
+    @ObservedObject var monitor: TiltMonitor
+    let depth: Double
+
+    func body(content: Content) -> some View {
+        content.offset(x: monitor.x * depth, y: monitor.y * depth)
+    }
+}
+
+struct FilterLook: ViewModifier {
+    let filter: ScreenFilter
+
+    func body(content: Content) -> some View {
+        content
+            .grayscale(filter == .mono || filter == .night ? 1 : 0)
+            .colorMultiply(filter == .night ? .green : .white)
+            .hueRotation(.degrees(filter == .vapor ? 60 : 0))
+            .saturation(filter == .vapor ? 1.8 : 1)
+            .overlay(overlay.allowsHitTesting(false))
+    }
+
+    @ViewBuilder private var overlay: some View {
+        if filter == .invert {
+            Color.white.blendMode(.difference)
+        } else if filter == .crt || filter == .night {
+            Canvas { context, size in
+                for y in stride(from: 0, to: size.height, by: 4) {
+                    context.fill(Path(CGRect(x: 0, y: y, width: size.width, height: 1.5)),
+                                 with: .color(Color.black.opacity(0.35)))
+                }
+            }
+        }
+    }
+}
+
+struct Ripple: Identifiable {
+    let id = UUID()
+    let point: CGPoint
+}
+
+struct RippleView: View {
+    @State private var grown = false
+
+    var body: some View {
+        Circle()
+            .stroke(Color.white, lineWidth: 2)
+            .frame(width: 70, height: 70)
+            .scaleEffect(grown ? 1.4 : 0.1)
+            .opacity(grown ? 0 : 0.9)
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.55)) { grown = true }
+            }
+    }
+}
+
 // MARK: - Prototype player
 
 struct Step {
@@ -3354,6 +3763,12 @@ struct PlayerView: View {
     @State private var flashAmount = 0.0
     @State private var particlesOff = false
     @State private var burstStart: Date?
+    @State private var tilt = TiltMonitor()
+    @State private var ripples: [Ripple] = []
+    @AppStorage("labFilter") private var filterName = ScreenFilter.none.rawValue
+    @AppStorage("labTilt") private var tiltOn = false
+    @AppStorage("labTiltAmount") private var tiltAmount = 18.0
+    @AppStorage("labRipple") private var rippleOn = false
     @State private var stage = RespringStage.idle
     @State private var respringTask: Task<Void, Never>?
     @AppStorage("respringTime") private var respringTime = 2.2
@@ -3386,6 +3801,12 @@ struct PlayerView: View {
                 .position(x: geo.size.width / 2, y: geo.size.height / 2)
                 .blur(radius: receding ? 24 : 0)
                 .scaleEffect(receding ? 0.88 : 1)
+                .modifier(FilterLook(filter: ScreenFilter(rawValue: filterName) ?? .none))
+                ForEach(ripples) { ripple in
+                    RippleView()
+                        .position(ripple.point)
+                        .allowsHitTesting(false)
+                }
                 if let start = burstStart {
                     Burst(start: start).id(start)
                 }
@@ -3403,10 +3824,15 @@ struct PlayerView: View {
             }
             .contentShape(Rectangle())
             .simultaneousGesture(LongPressGesture(minimumDuration: max(0.8, exitHold)).onEnded { _ in menu = true })
+            .simultaneousGesture(SpatialTapGesture().onEnded { tap in addRipple(tap.location) },
+                                 including: rippleOn ? .all : .subviews)
         }
         .background(Color.black)
         .ignoresSafeArea()
-        .onAppear { schedule() }
+        .onAppear {
+            schedule()
+            if tiltOn { tilt.start() }
+        }
         .task {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             hint = false
@@ -3414,6 +3840,7 @@ struct PlayerView: View {
         .onDisappear {
             cancelAll()
             respringTask?.cancel()
+            tilt.stop()
         }
         .background(alertHost)
         .overlay(sheetHost.allowsHitTesting(false))
@@ -3500,12 +3927,27 @@ struct PlayerView: View {
         ZStack {
             Backdrop(screen: screen)
             particleLayer(screen, front: false)
-            ForEach(screen.elements, id: \.link) { element in
+            ForEach(Array(screen.elements.enumerated()), id: \.element.link) { index, element in
                 playable(element)
+                    .modifier(Parallax(monitor: tilt, depth: depth(index, screen.elements.count)))
             }
             particleLayer(screen, front: true)
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
+    }
+
+    // Layers nearer the front move further.
+    private func depth(_ index: Int, _ count: Int) -> Double {
+        guard tiltOn, count > 0 else { return 0 }
+        return tiltAmount * Double(index + 1) / Double(count)
+    }
+
+    private func addRipple(_ point: CGPoint) {
+        let ripple = Ripple(point: point)
+        ripples.append(ripple)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            ripples.removeAll { $0.id == ripple.id }
+        }
     }
 
     @ViewBuilder private func particleLayer(_ screen: Frame, front: Bool) -> some View {
